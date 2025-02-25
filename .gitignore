@@ -1,0 +1,9 @@
+/.env
+myenv/
+__pycache__/
+handlers/__pycache__/
+/spheric-keel-430513-g9-f3948761d754.json
+models/__pycache__/
+utils__pycache__/
+/bot.py
+/bot_easy.py
