@@ -1,2 +1,6 @@
 python-telegram-bot
 flask
+pyTelegramBotAPI
+gspread 
+google-auth
+apscheduler
