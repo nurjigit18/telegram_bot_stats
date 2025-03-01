@@ -7,6 +7,10 @@ from config import GOOGLE_CREDS_FILE, SHEET_ID
 import logging
 from datetime import datetime
 from models.user_data import user_data
+import os
+import json
+import gspread
+from google.oauth2.service_account import Credentials
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +60,33 @@ class GoogleSheetsManager:
         return self.users_worksheet
 
 def connect_to_google_sheets():
-    """Initialize the Google Sheets connection"""
-    return GoogleSheetsManager.get_instance()
+    # Define the scope
+    scope = [
+        "https://spreadsheets.google.com/feeds",
+        "https://www.googleapis.com/auth/drive",
+    ]
+
+    # Load JSON content from environment variable
+    creds_json = os.getenv("GOOGLE_CREDS_JSON")
+    if not creds_json:
+        raise ValueError("GOOGLE_CREDS_JSON environment variable is not set")
+
+    # Parse JSON content
+    creds_info = json.loads(creds_json)
+
+    # Create credentials
+    creds = Credentials.from_service_account_info(creds_info, scopes=scope)
+
+    # Authorize the client
+    client = gspread.authorize(creds)
+
+    # Open the Google Sheet
+    sheet_id = os.getenv("SHEET_ID")
+    if not sheet_id:
+        raise ValueError("SHEET_ID environment variable is not set")
+
+    sheet = client.open_by_key(sheet_id)
+    return sheet
 
 def get_all_user_chat_ids():
     """Fetch all user chat IDs from Google Sheets"""
