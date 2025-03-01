@@ -5,3 +5,4 @@ gspread
 google-auth
 apscheduler
 python-dotenv
+oauth2client
