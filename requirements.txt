@@ -4,3 +4,4 @@ pyTelegramBotAPI
 gspread 
 google-auth
 apscheduler
+python-dotenv
