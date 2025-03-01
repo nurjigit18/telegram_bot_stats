@@ -103,9 +103,7 @@ def save_to_sheets(bot, message):
             form_data.get("product_color"),
             form_data.get("total_amount"),
             form_data.get("warehouse"),
-            form_data.get("s_amount"),
-            form_data.get("m_amount"),
-            form_data.get("l_amount")
+            form_data.get("sizes_data")  # All sizes in one column
         ]
         
         # Save to Google Sheets
@@ -121,7 +119,7 @@ def save_to_sheets(bot, message):
             f"Дата возможного прибытия: {form_data.get('estimated_arrival')}\n"
             f"Склад: {form_data.get('warehouse')}\n"
             f"Общее количество: {form_data.get('total_amount')} шт\n"
-            f"Размеры: S: {form_data.get('s_amount')}, M: {form_data.get('m_amount')}, L: {form_data.get('l_amount')}"
+            f"Размеры: {form_data.get('sizes_data')}"
         )
         bot.send_message(message.chat.id, summary)
         

@@ -22,4 +22,4 @@ PROMPTS = {
 DATE_PATTERN = r'^(0[1-9]|[12][0-9]|3[01])[./](0[1-9]|1[012])[./](20\d\d)$'
 
 # Size amounts regex
-SIZE_PATTERN = r'^[sS]:?\s*(\d+)\s*[mM]:?\s*(\d+)\s*[lL]:?\s*(\d+)$'
+SIZE_PATTERN = r'(\d*[a-zA-Z]+)\s*:\s*(\d+)'

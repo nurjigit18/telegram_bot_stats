@@ -41,8 +41,8 @@ def setup_deletion_handlers(bot: TeleBot):
     @bot.callback_query_handler(func=lambda call: call.data == "admin_delete_record")
     def handle_delete_record(call):
         bot.answer_callback_query(call.id)
-        # Removed the fourth argument "delete_"
-        show_product_selection(bot, call.message.chat.id, "Выберите запись для удаления:")
+        # Show the product selection with a back button
+        show_product_selection_with_back(bot, call.message.chat.id, "Выберите запись для удаления:")
     
     @bot.callback_query_handler(func=lambda call: call.data.startswith("delete_"))
     def handle_delete_selection(call):
@@ -86,3 +86,56 @@ def setup_deletion_handlers(bot: TeleBot):
             call.message.chat.id,
             call.message.message_id
         )
+
+    @bot.callback_query_handler(func=lambda call: call.data == "back_to_admin_menu")
+    def handle_back_to_admin_menu(call):
+        """Handles the 'Back' button click, returning to the main admin menu."""
+        try:
+            bot.answer_callback_query(call.id)  # Acknowledge the callback
+            # Re-display the admin menu (same as when /admin is used)
+            admin_markup = InlineKeyboardMarkup()
+            admin_markup.row(
+                InlineKeyboardButton("Новое обьявление", callback_data="admin_new_announce"),
+            )
+            admin_markup.row(
+                InlineKeyboardButton("Удалить запись", callback_data="admin_delete_record")
+            )
+            admin_markup.row(
+                InlineKeyboardButton("Отмена", callback_data="admin_cancel")
+            )
+            bot.edit_message_text(
+                "Выберите действие:",
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=admin_markup
+            )
+        except Exception as e:
+            logger.error(f"Error handling back to admin menu: {e}")
+            bot.send_message(call.message.chat.id, "Произошла ошибка при возврате в админ меню.")
+
+def show_product_selection_with_back(bot, chat_id, message_text):
+    """Displays the list of records with a 'Back' button, taking the user to the main admin menu."""
+    try:
+        sheets_manager = GoogleSheetsManager.get_instance()
+        all_records = sheets_manager.get_main_worksheet().get_all_values()
+
+        if len(all_records) <= 1:
+            bot.send_message(chat_id, "Нет доступных записей для выбора.")
+            return
+
+        markup = InlineKeyboardMarkup()
+        for idx, row in enumerate(all_records[1:], start=2):  # Start from row 2 (skip header)
+            product_info = f"{row[3]} - {row[7]} ({row[4]})"  # product_name - color (date)
+            markup.add(InlineKeyboardButton(
+                text=product_info,
+                callback_data=f"delete_{idx}"
+            ))
+
+        # Add the "Back" button, taking the user back to the main admin menu
+        markup.add(InlineKeyboardButton("⬅️ Назад", callback_data="back_to_admin_menu"))
+
+        bot.send_message(chat_id, message_text, reply_markup=markup)
+
+    except Exception as e:
+        logger.error(f"Error in show_product_selection_with_back: {e}")
+        bot.send_message(chat_id, "Произошла ошибка при отображении списка записей.")

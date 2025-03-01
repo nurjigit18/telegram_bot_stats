@@ -32,10 +32,10 @@ def create_menu(options, back_callback=None):
 
     if back_callback:
         markup.row(
-            InlineKeyboardButton("Назад", callback_data=back_callback)
+            InlineKeyboardButton("⬅️ Назад", callback_data=back_callback)
         )
     markup.row(
-        InlineKeyboardButton("Отмена", callback_data="cancel_edit")
+        InlineKeyboardButton("❌ Отмена", callback_data="cancel_edit")
     )
     return markup
 
@@ -45,8 +45,8 @@ def setup_announcement_handlers(bot: TeleBot):
         """Shows the main admin announcement menu."""
         markup = create_menu(
             [
-                ("Отправить всем", "announce_all"),
-                ("Пользователю", "announce_individual"),
+                ("👥 Отправить всем", "announce_all"),
+                ("👤Пользователю", "announce_individual"),
             ],
         )
         if message_id:

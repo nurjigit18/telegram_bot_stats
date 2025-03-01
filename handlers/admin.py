@@ -23,31 +23,60 @@ def setup_admin_handler(bot):
         # Display admin options
         admin_markup = InlineKeyboardMarkup()
         admin_markup.row(
-            InlineKeyboardButton("Новое обьявление", callback_data="admin_new_announce"),
+            InlineKeyboardButton("🔔 Новое обьявление", callback_data="admin_new_announce"),
         )
         admin_markup.row(
-            InlineKeyboardButton("Удалить запись", callback_data="admin_delete_record")
+            InlineKeyboardButton("🗑️ Удалить запись", callback_data="admin_delete_record")
+        )
+        # Add cancel button
+        admin_markup.row(
+            InlineKeyboardButton("❌ Отмена", callback_data="admin_cancel")
         )
         bot.send_message(message.chat.id, "Выберите действие:", reply_markup=admin_markup)
+
+    @bot.callback_query_handler(func=lambda call: call.data == "admin_cancel")
+    def handle_admin_cancel(call):
+        try:
+            bot.answer_callback_query(call.id)
+            bot.edit_message_text(
+                "🚫 Действие администратора отменено.",
+                call.message.chat.id,
+                call.message.message_id
+            )
+        except Exception as e:
+            logger.error(f"Error handling admin cancel: {str(e)}")
+            bot.send_message(call.message.chat.id, "❌ Ошибка при отмене операции.")
         
 def setup_admin_handlers(bot: TeleBot):
     @bot.callback_query_handler(func=lambda call: call.data.startswith("admin_") or call.data.startswith("delete_") or call.data.startswith("confirm_delete_") or call.data.startswith("cancel_delete_"))
     def handle_admin_actions(call):
         if call.data == "admin_new_announce":
             bot.answer_callback_query(call.id)
-            bot.send_message(call.message.chat.id, "Пожалуйста введите новое обьявление:")
+            
+            #Add cancel button
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton("Отмена", callback_data="admin_cancel_announce"))
+            bot.send_message(call.message.chat.id, "Пожалуйста введите новое обьявление:", reply_markup=markup)
             bot.register_next_step_handler(call.message, process_news_announcement)
-        
-        
+
         elif call.data == "admin_delete_record":
             bot.answer_callback_query(call.id)
             show_product_selection(bot, call.message.chat.id, "Выберите запись для удаления:", "delete_")
-        
+
         elif call.data.startswith("delete_"):
             bot.answer_callback_query(call.id)
             row_index = int(call.data.split("_")[1])
+
             # Show confirmation dialog
-            show_delete_confirmation(bot, call.message.chat.id, row_index)
+            markup = InlineKeyboardMarkup()
+            markup.add(InlineKeyboardButton("Подтвердить", callback_data=f"confirm_delete_{row_index}"))
+            markup.add(InlineKeyboardButton("Отмена", callback_data=f"cancel_delete_{row_index}"))
+            bot.edit_message_text(
+                "Вы уверены, что хотите удалить эту запись?",
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=markup
+            )
         
         elif call.data.startswith("confirm_delete_"):
             bot.answer_callback_query(call.id)
@@ -82,3 +111,12 @@ def setup_admin_handlers(bot: TeleBot):
                 call.message.chat.id,
                 call.message.message_id
             )
+
+    @bot.callback_query_handler(func=lambda call: call.data == "admin_cancel_announce")
+    def handle_admin_cancel_announce(call):
+        try:
+            bot.answer_callback_query(call.id)
+            bot.send_message(call.message.chat.id, "🚫 Добавление объявления отменено.")
+        except Exception as e:
+            logger.error(f"Error handling cancel announce: {str(e)}")
+            bot.send_message(call.message.chat.id, "❌ Ошибка при отмене операции.")

@@ -78,8 +78,8 @@ def setup_edit_handlers(bot: TeleBot):
 
 
     @bot.message_handler(func=lambda message: user_data.has_user(message.from_user.id) and
-                                             user_data.get_user_data(message.from_user.id).get("editing_row") and
-                                             user_data.get_current_action(message.from_user.id) == "editing_sizes")
+                                            user_data.get_user_data(message.from_user.id).get("editing_row") and
+                                            user_data.get_current_action(message.from_user.id) == "editing_sizes")
     def handle_sizes_input(message):
         try:
             user_id = message.from_user.id
@@ -110,6 +110,7 @@ def setup_edit_handler(bot: TeleBot):
     @bot.message_handler(commands=['edit'])
     def handle_edit_command(message):
         try:
+            user_id = message.from_user.id
             sheets_manager = GoogleSheetsManager.get_instance()
             records = sheets_manager.get_main_worksheet().get_all_values()
 
@@ -117,21 +118,43 @@ def setup_edit_handler(bot: TeleBot):
                 bot.reply_to(message, "📝 Нет доступных записей для редактирования.")
                 return
 
-            markup = InlineKeyboardMarkup()
+            # Filter records to show only those created by the current user
+            user_records = []
             for idx, record in enumerate(records[1:], start=2):
-                product_name = record[3] if len(record) > 3 else "Unknown"
-                product_color = record[7] if len(record) > 7 else "Unknown"
-                button_text = f"{product_name} - {product_color}"
-                markup.add(InlineKeyboardButton(
-                    button_text,
-                    callback_data=f"edit_record_{idx}"
-                ))
+                # Check if the record has a user_id field (column 1) and it matches current user
+                if len(record) > 1 and record[1] == str(user_id):
+                    user_records.append((idx, record))
 
-            bot.reply_to(message, "📋 Выберите запись для редактирования:", reply_markup=markup)
+            if not user_records:
+                bot.reply_to(message, "📝 У вас пока нет созданных записей для редактирования.")
+                return
+
+            # Store the list of user records in user_data for later use when returning to this menu
+            user_data.initialize_user(user_id)
+            user_data.update_user_data(user_id, "user_records", user_records)
+
+            # Show the record selection menu
+            show_record_selection_menu(bot, message.chat.id, user_records)
 
         except Exception as e:
             logger.error(f"Error handling edit command: {str(e)}")
             bot.reply_to(message, "❌ Произошла ошибка при получении списка записей.")
+                
+    @bot.callback_query_handler(func=lambda call: call.data == "cancel_edit_operation")
+    def handle_cancel_edit_operation(call):
+        try:
+            bot.answer_callback_query(call.id)
+            bot.edit_message_text(
+                "❌ Операция редактирования отменена.",
+                call.message.chat.id,
+                call.message.message_id
+            )
+            # Clear any user data related to editing
+            user_id = call.from_user.id
+            user_data.clear_user_data(user_id)
+        except Exception as e:
+            logger.error(f"Error handling cancel edit operation: {str(e)}")
+            bot.send_message(call.message.chat.id, "❌ Ошибка при отмене операции.")
 
     @bot.callback_query_handler(func=lambda call: call.data.startswith("edit_record_"))
     def handle_edit_selection(call):
@@ -169,8 +192,10 @@ def setup_edit_handler(bot: TeleBot):
                     callback_data=f"field_edit_{row_index}_{field_id}_{col_index}"
                 ))
 
-            # Add a "Done" button
+            # Add buttons: Done, Back, and Cancel
             markup.add(InlineKeyboardButton("✅ Готово", callback_data="edit_done"))
+            markup.add(InlineKeyboardButton("⬅️ Назад", callback_data="back_to_record_selection"))
+            markup.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel_edit_operation"))
 
             current_values = (
                 f"📝 Текущие значения:\n\n"
@@ -179,13 +204,10 @@ def setup_edit_handler(bot: TeleBot):
                 f"Дата отправки: {record[4]}\n"
                 f"Ожидаемая дата прибытия: {record[5]}\n"
                 f"Фактическая дата прибытия: {record[6] or 'Не указано'}\n"
-                f"Склад: {record[9]}\n"  # Changed from 9 to 8
+                f"Склад: {record[9]}\n"
                 f"Общее количество: {record[8]}\n"
-                f"Размеры:\n"
-                f"S: {record[10]}\n"
-                f"M: {record[11]}\n"
-                f"L: {record[12]}\n\n"
-                f"Выберите поле для редактирования:"
+                f"Размеры: {record[10]}\n"
+                f"\n\nВыберите поле для редактирования:"
             )
 
             bot.edit_message_text(
@@ -288,8 +310,9 @@ def setup_edit_handler(bot: TeleBot):
             except Exception as e:
                 logger.error(f"Error getting current value: {str(e)}")
                 current_value = "Не указано"
-
-            prompt = f"Введите новое {field_names.get(field_id, 'значение')}:\n(Текущее значение: {current_value})"
+            if current_value == None:
+                current_value = "Не указано"
+            prompt = f"Введите новое {field_names.get(field_id, 'значение (ДД/ММ/ГГГГ)')}:\n(Текущее значение: {current_value})"
             msg = bot.send_message(
                 call.message.chat.id,
                 prompt,
@@ -347,8 +370,9 @@ def setup_edit_handler(bot: TeleBot):
             sheets_manager = GoogleSheetsManager.get_instance()
             sheets_manager.get_main_worksheet().update_cell(row_index, int(col_index)+1, new_value)
 
-            # Clear editing state
-            user_data.clear_user_data(user_id)
+            # Don't clear editing state yet, keep user_records for potential back navigation
+            user_data.update_user_data(user_id, "editing_field", None)
+            user_data.update_user_data(user_id, "editing_col", None)
 
             # Show success message and updated record
             bot.reply_to(message, "✅ Значение успешно обновлено!")
@@ -367,10 +391,8 @@ def setup_edit_handler(bot: TeleBot):
                     f"Фактическая дата прибытия: {record[6] if len(record) > 6 and record[6] else 'Не указано'}\n"
                     f"Склад: {record[9] if len(record) > 9 and record[9] else 'Не указано'}\n"
                     f"Общее количество: {record[8] if len(record) > 8 else 'Не указано'}\n"
-                    f"Размеры:\n"
-                    f"S: {record[10] if len(record) > 10 and record[10] else '0'}\n"
-                    f"M: {record[11] if len(record) > 11 and record[11] else '0'}\n"
-                    f"L: {record[12] if len(record) > 12 else '0'}"
+                    f"Размеры: {record[10] if len(record) > 10 and record[10] else '0'}\n"
+                    f"Статус: {record[11] if len(record) > 11 and record[11] else 'Ну указан'}\n"
                 )
 
                 markup = InlineKeyboardMarkup()
@@ -401,5 +423,59 @@ def setup_edit_handler(bot: TeleBot):
         try:
             bot.answer_callback_query(call.id)
             bot.send_message(call.message.chat.id, "Редактирование завершено.")
+            # Clear user data when editing is complete
+            user_id = call.from_user.id
+            user_data.clear_user_data(user_id)
         except Exception as e:
             logger.error(f"Error handling edit done: {str(e)}")
+    
+    @bot.callback_query_handler(func=lambda call: call.data == "back_to_record_selection")
+    def handle_back_to_record_selection(call):
+        try:
+            bot.answer_callback_query(call.id)
+            user_id = call.from_user.id
+            
+            # Get the stored user records
+            user_records = user_data.get_user_data(user_id).get("user_records")
+            
+            if not user_records:
+                bot.send_message(call.message.chat.id, "❌ Ошибка: список записей не найден.")
+                return
+                
+            # Show the record selection menu again
+            show_record_selection_menu(bot, call.message.chat.id, user_records, call.message.message_id)
+            
+        except Exception as e:
+            logger.error(f"Error handling back to record selection: {str(e)}")
+            bot.send_message(call.message.chat.id, "❌ Ошибка при возврате к выбору записи.")
+    
+    def show_record_selection_menu(bot, chat_id, user_records, message_id=None):
+        """Helper function to show the record selection menu"""
+        markup = InlineKeyboardMarkup()
+        for idx, record in user_records:
+            product_name = record[3] if len(record) > 3 else "Unknown"
+            product_color = record[7] if len(record) > 7 else "Unknown"
+            button_text = f"{product_name} - {product_color}"
+            markup.add(InlineKeyboardButton(
+                button_text,
+                callback_data=f"edit_record_{idx}"
+            ))
+        
+        # Add cancel button
+        markup.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel_edit_operation"))
+        
+        if message_id:
+            # Edit existing message
+            bot.edit_message_text(
+                "📋 Выберите запись для редактирования:",
+                chat_id,
+                message_id,
+                reply_markup=markup
+            )
+        else:
+            # Send new message
+            bot.send_message(
+                chat_id,
+                "📋 Выберите запись для редактирования:",
+                reply_markup=markup
+            )

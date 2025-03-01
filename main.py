@@ -8,12 +8,14 @@ from handlers.save import setup_save_handler
 from handlers.edit import setup_edit_handler
 from handlers.admin import setup_admin_handler
 from handlers.status import setup_status_handler
-from handlers.payment import setup_payment_handler
+# from handlers.payment import setup_payment_handler
 from handlers.default import setup_default_handler
 from handlers.announcements import setup_announcement_handlers
 from handlers.status import setup_status_handlers
 from handlers.deletion import setup_deletion_handlers
 from handlers.help import setup_help_handler
+from handlers.sender import setup_file_sender_handlers
+
 import logging
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -41,11 +43,13 @@ setup_help_handler(bot)
 setup_edit_handler(bot)
 setup_admin_handler(bot)
 setup_status_handler(bot)
-setup_payment_handler(bot)
+setup_file_sender_handlers(bot)
+# setup_payment_handler(bot)
 setup_default_handler(bot)
 setup_announcement_handlers(bot)
 setup_status_handlers(bot)
 setup_deletion_handlers(bot)
+
 
 if __name__ == "__main__":
     logger.info("Starting Product Tracking Bot...")

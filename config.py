@@ -14,3 +14,6 @@ if not all([BOT_TOKEN, GOOGLE_CREDS_FILE, SHEET_ID]):
     raise ValueError("Please set TELEGRAM_TOKEN, GOOGLE_CREDS_FILE, and SHEET_ID in your .env file")
 
 ADMIN_USER_USERNAMES = ["nKurm", "AlinaK2205"]  # Replace with actual admin user IDs
+
+SIZE_PATTERN = r'([a-zA-Z]+)\s*:\s*(\d+)'
+
