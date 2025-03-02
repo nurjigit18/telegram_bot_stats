@@ -17,14 +17,7 @@ from handlers.status import setup_status_handlers
 from handlers.deletion import setup_deletion_handlers
 from handlers.help import setup_help_handler
 from handlers.sender import setup_file_sender_handlers
-
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "Bot is running!"
-
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+import threading
 
 # Configure logging
 logging.basicConfig(
@@ -33,6 +26,27 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Initialize Flask app
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is running!"
+
+def bot_polling():
+    """Function to run the bot in a separate thread"""
+    logger.info("Starting Product Tracking Bot...")
+    try:
+        # Start the bot
+        logger.info("Bot is running...")
+        bot.infinity_polling()
+    except Exception as e:
+        logger.error(f"Bot polling error: {str(e)}")
+
+# Ensure proper path for imports
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+# Initialize Google Sheets
 try:
     sheets_manager = connect_to_google_sheets()
 except Exception as e:
@@ -56,22 +70,13 @@ setup_announcement_handlers(bot)
 setup_status_handlers(bot)
 setup_deletion_handlers(bot)
 
+# Start the bot in a separate thread
+bot_thread = threading.Thread(target=bot_polling)
+bot_thread.daemon = True
+bot_thread.start()
 
 if __name__ == "__main__":
-    # Start your bot logic in a separate thread/process
-    import threading
-    threading.Thread(target=your_bot_function).start()
-    # Then bind to the PORT that Render expects
+    # Get port from environment variable or use default
     port = int(os.environ.get("PORT", 8080))
+    # Run the Flask app
     app.run(host='0.0.0.0', port=port)
-    
-    logger.info("Starting Product Tracking Bot...")
-    try:
-        # Start the bot
-        logger.info("Bot is running...")
-        bot.infinity_polling()
-    
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
-    except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
