@@ -1,5 +1,7 @@
 import sys
 import os
+import logging
+from flask import Flask
 from telebot import TeleBot
 from config import BOT_TOKEN
 from utils.google_sheets import connect_to_google_sheets
@@ -16,7 +18,11 @@ from handlers.deletion import setup_deletion_handlers
 from handlers.help import setup_help_handler
 from handlers.sender import setup_file_sender_handlers
 
-import logging
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is running!"
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
@@ -52,6 +58,13 @@ setup_deletion_handlers(bot)
 
 
 if __name__ == "__main__":
+    # Start your bot logic in a separate thread/process
+    import threading
+    threading.Thread(target=your_bot_function).start()
+    # Then bind to the PORT that Render expects
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
+    
     logger.info("Starting Product Tracking Bot...")
     try:
         # Start the bot
