@@ -30,11 +30,32 @@ class GoogleSheetsManager:
 
     def connect(self):
         try:
+            # Define the scope
             scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-            credentials = ServiceAccountCredentials.from_json_keyfile_name(GOOGLE_CREDS_FILE, scope)
+
+            # Retrieve credentials from environment variable
+            creds_json = os.getenv('GOOGLE_CREDS_JSON')
+            if not creds_json:
+                raise ValueError("Environment variable 'GOOGLE_CREDS_JSON' is not set.")
+
+            # Parse JSON string into a dictionary
+            creds_dict = json.loads(creds_json)
+
+            # Create credentials from the dictionary
+            credentials = Credentials.from_service_account_info(creds_dict, scopes=scope)
+
+            # Authorize the client
             gc = gspread.authorize(credentials)
-            self._spreadsheet = gc.open_by_key(SHEET_ID)
+
+            # Retrieve Google Sheet ID from environment variable
+            sheet_id = os.getenv("SHEET_ID")
+            if not sheet_id:
+                raise ValueError("Environment variable 'SHEET_ID' is not set.")
+
+            # Open the Google Sheet
+            self._spreadsheet = gc.open_by_key(sheet_id)
             self.main_worksheet = self._spreadsheet.sheet1
+
             # Try to get or create Users worksheet
             try:
                 self.users_worksheet = self._spreadsheet.worksheet("Users")
@@ -43,10 +64,20 @@ class GoogleSheetsManager:
                 # Add headers
                 self.users_worksheet.update('A1:C1', [['chat_id', 'username', 'registration_date']])
 
-            logger.info(f"Connected to Google Sheet with ID: {SHEET_ID}")
+            logger.info(f"Connected to Google Sheet with ID: {sheet_id}")
         except Exception as e:
             logger.error(f"Failed to connect to Google Sheets: {str(e)}")
             raise
+
+    def get_main_worksheet(self):
+        if self.main_worksheet is None:
+            self.connect()
+        return self.main_worksheet
+
+    def get_users_worksheet(self):
+        if self.users_worksheet is None:
+            self.connect()
+        return self.users_worksheet
 
     def get_main_worksheet(self):
         if self.main_worksheet is None:

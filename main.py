@@ -11,6 +11,7 @@ import psutil
 from datetime import datetime
 from telebot import TeleBot
 from config import BOT_TOKEN
+from utils.google_sheets import GoogleSheetsManager
 from utils.google_sheets import connect_to_google_sheets
 from handlers.start import setup_start_handler
 from handlers.save import setup_save_handler
@@ -197,9 +198,9 @@ def initialize_google_sheets():
     """Initialize Google Sheets with error handling"""
     try:
         logger.info("Connecting to Google Sheets...")
-        sheets = connect_to_google_sheets()
+        sheets_manager = GoogleSheetsManager.get_instance()
         logger.info("Google Sheets connection successful")
-        return sheets
+        return sheets_manager
     except Exception as e:
         state.errors_count += 1
         error_msg = f"Failed to initialize Google Sheets: {e}"
