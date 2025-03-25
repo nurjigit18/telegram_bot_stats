@@ -64,19 +64,18 @@ def connect_to_google_sheets():
         "https://www.googleapis.com/auth/drive",
     ]
 
-    # Get absolute path to credentials file
-    creds_file = os.getenv('GOOGLE_CREDS_JSON')
+    # Retrieve credentials from the environment variable
+    creds_json = os.getenv('GOOGLE_CREDS_JSON')
 
-    if not creds_file:
+    if not creds_json:
         raise ValueError("Environment variable 'GOOGLE_CREDS_JSON' is not set.")
 
-    # Check if file exists
-    if not os.path.exists(creds_file):
-        raise FileNotFoundError(f"Google credentials file not found: {creds_file}")
-
     try:
-        # Create credentials from service account file
-        creds = ServiceAccountCredentials.from_json_keyfile_name(GOOGLE_CREDS_FILE, scope)
+        # Parse the JSON string into a dictionary
+        creds_dict = json.loads(creds_json)
+
+        # Create credentials from the dictionary
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
 
         # Authorize the client
         client = gspread.authorize(creds)
@@ -84,7 +83,7 @@ def connect_to_google_sheets():
         # Open the Google Sheet
         sheet_id = os.getenv("SHEET_ID")
         if not sheet_id:
-            raise ValueError("SHEET_ID environment variable is not set")
+            raise ValueError("SHEET_ID environment variable is not set.")
 
         sheet = client.open_by_key(sheet_id)
         return sheet
