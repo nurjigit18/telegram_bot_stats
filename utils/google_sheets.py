@@ -65,8 +65,10 @@ def connect_to_google_sheets():
     ]
 
     # Get absolute path to credentials file
-    creds_file = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             'spheric-keel-430513-g9-f3948761d754.json')
+    creds_file = os.getenv('GOOGLE_CREDS_JSON')
+
+    if not creds_file:
+        raise ValueError("Environment variable 'GOOGLE_CREDS_JSON' is not set.")
 
     # Check if file exists
     if not os.path.exists(creds_file):
