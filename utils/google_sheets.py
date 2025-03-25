@@ -1,5 +1,3 @@
-# google_sheets.py
-
 import gspread
 from telebot import TeleBot
 from oauth2client.service_account import ServiceAccountCredentials
@@ -17,18 +15,18 @@ logger = logging.getLogger(__name__)
 class GoogleSheetsManager:
     _instance = None
     _spreadsheet = None
-    
+
     @classmethod
     def get_instance(cls):
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
-    
+
     def __init__(self):
         self.main_worksheet = None
         self.users_worksheet = None
         self.connect()
-    
+
     def connect(self):
         try:
             scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
@@ -43,7 +41,7 @@ class GoogleSheetsManager:
                 self.users_worksheet = self._spreadsheet.add_worksheet("Users", 1000, 3)
                 # Add headers
                 self.users_worksheet.update('A1:C1', [['chat_id', 'username', 'registration_date']])
-            
+
             logger.info(f"Connected to Google Sheet with ID: {SHEET_ID}")
         except Exception as e:
             logger.error(f"Failed to connect to Google Sheets: {str(e)}")
@@ -53,7 +51,7 @@ class GoogleSheetsManager:
         if self.main_worksheet is None:
             self.connect()
         return self.main_worksheet
-    
+
     def get_users_worksheet(self):
         if self.users_worksheet is None:
             self.connect()
@@ -66,27 +64,32 @@ def connect_to_google_sheets():
         "https://www.googleapis.com/auth/drive",
     ]
 
-    # Load JSON content from environment variable
-    creds_json = os.getenv("GOOGLE_CREDS_JSON")
-    if not creds_json:
-        raise ValueError("GOOGLE_CREDS_JSON environment variable is not set")
+    # Get absolute path to credentials file
+    creds_file = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             'spheric-keel-430513-g9-f3948761d754.json')
 
-    # Parse JSON content
-    creds_info = json.loads(creds_json)
+    # Check if file exists
+    if not os.path.exists(creds_file):
+        raise FileNotFoundError(f"Google credentials file not found: {creds_file}")
 
-    # Create credentials
-    creds = Credentials.from_service_account_info(creds_info, scopes=scope)
+    try:
+        # Create credentials from service account file
+        creds = ServiceAccountCredentials.from_json_keyfile_name(GOOGLE_CREDS_FILE, scope)
 
-    # Authorize the client
-    client = gspread.authorize(creds)
+        # Authorize the client
+        client = gspread.authorize(creds)
 
-    # Open the Google Sheet
-    sheet_id = os.getenv("SHEET_ID")
-    if not sheet_id:
-        raise ValueError("SHEET_ID environment variable is not set")
+        # Open the Google Sheet
+        sheet_id = os.getenv("SHEET_ID")
+        if not sheet_id:
+            raise ValueError("SHEET_ID environment variable is not set")
 
-    sheet = client.open_by_key(sheet_id)
-    return sheet
+        sheet = client.open_by_key(sheet_id)
+        return sheet
+
+    except Exception as e:
+        logging.error(f"Failed to connect to Google Sheets: {str(e)}")
+        raise
 
 def get_all_user_chat_ids():
     """Fetch all user chat IDs from Google Sheets"""
@@ -96,7 +99,7 @@ def get_all_user_chat_ids():
         user_data = users_sheet.get_all_values()
         if len(user_data) <= 1:  # Only headers exist
             return []
-        
+
         # Skip header row and extract chat IDs
         chat_ids = [int(row[0]) for row in user_data[1:]]
         return chat_ids
@@ -109,15 +112,15 @@ def save_to_sheets(bot, message):
     sheets_manager = GoogleSheetsManager.get_instance()
     user_id = message.from_user.id
     username = message.from_user.username or "Unknown"
-    
+
     # Use the UserData class method to get form data
     form_data = user_data.get_form_data(user_id)
-    
+
     if not form_data:
         logger.error(f"No form data found for user_id: {user_id}")
         bot.send_message(message.chat.id, "❌ Данные пользователя не найдены.")
         return
-    
+
     try:
         # Prepare row data
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -134,11 +137,11 @@ def save_to_sheets(bot, message):
             form_data.get("warehouse"),
             form_data.get("sizes_data")  # All sizes in one column
         ]
-        
+
         # Save to Google Sheets
         sheets_manager.get_main_worksheet().append_row(row_data)
         logger.info(f"Saved product data from {username} to Google Sheets")
-        
+
         # Send confirmation and summary
         summary = (
             "✅ Данные записаны!\n\n"
@@ -151,10 +154,10 @@ def save_to_sheets(bot, message):
             f"Размеры: {form_data.get('sizes_data')}"
         )
         bot.send_message(message.chat.id, summary)
-        
+
         # Clear user data using the UserData class method
         user_data.clear_user_data(user_id)
-        
+
     except Exception as e:
         logger.error(f"Error saving to Google Sheets: {str(e)}")
         bot.send_message(message.chat.id, "❌ Ошибка при сохранении данных. Попробуйте еще раз с помощью /save")

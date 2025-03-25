@@ -16,7 +16,7 @@ def setup_start_handler(bot: TeleBot):
         try:
             sheets_manager = GoogleSheetsManager.get_instance()
             users_sheet = sheets_manager.get_users_worksheet()
-            
+
             # Check if user already exists
             user_exists = False
             try:
@@ -24,7 +24,7 @@ def setup_start_handler(bot: TeleBot):
                 user_exists = len(user_cells) > 0
             except:
                 user_exists = False
-            
+
             if not user_exists:
                 # Add registration date
                 registration_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -35,7 +35,7 @@ def setup_start_handler(bot: TeleBot):
             logger.error(f"Error saving user to Google Sheets: {str(e)}")
 
         welcome_text = (
-            "👋 Welcome to the Product Tracking Bot!\n\n"
+            "👋 Добро пожаловать, это бот от Nova Eris WB!\n\n"
             "Нажмите /save чтобы ввести данные изделия.\n"
             "Нажмите /edit чтобы редактировать данные.\n"
             "Нажмите /status чтобы проверить статус вашего изделия.\n"

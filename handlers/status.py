@@ -5,6 +5,8 @@ from utils.google_sheets import GoogleSheetsManager
 import logging
 from config import ADMIN_USER_USERNAMES
 from utils.keyboards import show_product_selection
+from datetime import datetime  # Add this import at the top of your file
+
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +192,7 @@ def setup_status_handler(bot: TeleBot):
 
             bot.send_message(
                 call.message.chat.id,
-                "✏️ Введите новый статус для записи:",
+                "✏️ Введите новый статус для записи, например (В производстве, Отправлено из цеха, В пути, Отгружено):",
                 reply_markup=markup
             )
         except Exception as e:
@@ -204,28 +206,66 @@ def setup_status_handler(bot: TeleBot):
     @bot.message_handler(func=lambda message: user_data.get_row_index(message.from_user.id) is not None)
     def update_status(message):
         try:
-            row_index = user_data.get_row_index(message.from_user.id)
+            user_id = message.from_user.id
+            username = message.from_user.first_name or f"User ID: {user_id}"
+            row_index = user_data.get_row_index(user_id)
             new_status = message.text
 
+            # Get the sheet manager and worksheet
             sheets_manager = GoogleSheetsManager.get_instance()
             worksheet = sheets_manager.get_main_worksheet()
-            worksheet.update_cell(row_index, 12, new_status)  # Update status in column 12 (adjusted from 14)
 
+            # Get the current record to include in the notification
+            record = worksheet.row_values(row_index)
+            product_name = record[3] if len(record) > 3 else "Unknown product"
+            product_color = record[7] if len(record) > 7 else "Unknown color"
+
+            # Update status in column 12
+            worksheet.update_cell(row_index, 12, new_status)
+
+            # Prepare response for the user
             markup = InlineKeyboardMarkup()
             markup.add(InlineKeyboardButton("К списку статусов", callback_data="back_to_status_list"))
+            bot.send_message(message.chat.id, f"✅ Статус изменен на: {new_status}", reply_markup=markup)
 
-            bot.send_message(message.chat.id, f"Статус изменен на: {new_status}", reply_markup=markup)
-            user_data.set_row_index(message.from_user.id, None)  # Clear stored row index
+            # Send notifications to all admins
+            notification_text = (
+                f"🔔 Уведомление об изменении статуса\n\n"
+                f"Пользователь: @{username}\n"
+                f"Изделие: {product_name}\n"
+                f"Цвет: {product_color}\n"
+                f"Новый статус: {new_status}\n"
+                f"Дата изменения: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+
+            # Send notification to each admin
+            for admin_username in ADMIN_USER_USERNAMES:
+                try:
+                    # We need to get the admin's chat_id from the users worksheet
+                    users_worksheet = sheets_manager.get_users_worksheet()
+                    all_users = users_worksheet.get_all_values()
+
+                    # Find admin's chat_id by username
+                    admin_chat_id = None
+                    for user_row in all_users[1:]:  # Skip header
+                        if len(user_row) > 1 and user_row[1] == admin_username:
+                            admin_chat_id = int(user_row[0])
+                            break
+
+                    if admin_chat_id:
+                        bot.send_message(admin_chat_id, notification_text)
+                        logger.info(f"Notification sent to admin {admin_username}")
+                    else:
+                        logger.warning(f"Admin {admin_username} not found in users worksheet")
+                except Exception as admin_error:
+                    logger.error(f"Failed to notify admin {admin_username}: {str(admin_error)}")
+
+            # Clear stored row index
+            user_data.set_row_index(user_id, None)
+
         except Exception as e:
             logger.error(f"Error updating status: {str(e)}")
             bot.send_message(message.chat.id, "❌ Ошибка при обновлении статуса.")
+            # Still clear the row index in case of error
+            user_data.set_row_index(message.from_user.id, None)
 
-def setup_status_handlers(bot: TeleBot):
-    @bot.message_handler(commands=['status'])
-    def handle_status_command(message):
-        # This function is redundant with setup_status_handler's functionality.
-        # You can either remove this or merge the functionality.
-        pass
-
-    # If you want to keep some functionality from setup_status_handlers,
-    # you can add it here. Otherwise, you can remove this function.

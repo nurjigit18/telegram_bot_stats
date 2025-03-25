@@ -6,7 +6,7 @@ import os
 
 # Get environment variables
 BOT_TOKEN = os.getenv('TELEGRAM_TOKEN')
-GOOGLE_CREDS_FILE = os.getenv('GOOGLE_CREDS_FILE')
+GOOGLE_CREDS_FILE = '/home/nurjigit18/telegrambot/utils/spheric-keel-430513-g9-f3948761d754.json'
 SHEET_ID = os.getenv('SHEET_ID')
 
 # Validate environment variables

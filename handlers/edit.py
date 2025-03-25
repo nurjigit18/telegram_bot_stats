@@ -139,7 +139,7 @@ def setup_edit_handler(bot: TeleBot):
         except Exception as e:
             logger.error(f"Error handling edit command: {str(e)}")
             bot.reply_to(message, "❌ Произошла ошибка при получении списка записей.")
-                
+
     @bot.callback_query_handler(func=lambda call: call.data == "cancel_edit_operation")
     def handle_cancel_edit_operation(call):
         try:
@@ -232,17 +232,17 @@ def setup_edit_handler(bot: TeleBot):
 
             # Parse the callback data correctly
             parts = call.data.split("_")
-            
+
             # Debug logging to understand the actual format
             logger.info(f"Parsing callback data: {call.data}, parts: {parts}")
-            
+
             # The expected format is "field_edit_2_product_name_3"
             # So parts would be ["field", "edit", "2", "product", "name", "3"] for product_name
             # Or ["field", "edit", "2", "warehouse", "9"] for warehouse
-            
+
             # Extract row index (always at position 2)
             row_index = int(parts[2])
-            
+
             # For fields with underscores in their names (like product_name),
             # we need to reconstruct the field_id
             if len(parts) > 5:  # If there are more parts, it might be a field with underscore
@@ -312,7 +312,7 @@ def setup_edit_handler(bot: TeleBot):
                 current_value = "Не указано"
             if current_value == None:
                 current_value = "Не указано"
-            prompt = f"Введите новое {field_names.get(field_id, 'значение (ДД/ММ/ГГГГ)')}:\n(Текущее значение: {current_value})"
+            prompt = f"Введите новое {field_names.get(field_id, 'значение (ДД/ММ/ГГГГ)')} (ДД/ММ/ГГГГ):\n(Текущее значение: {current_value})"
             msg = bot.send_message(
                 call.message.chat.id,
                 prompt,
@@ -428,27 +428,27 @@ def setup_edit_handler(bot: TeleBot):
             user_data.clear_user_data(user_id)
         except Exception as e:
             logger.error(f"Error handling edit done: {str(e)}")
-    
+
     @bot.callback_query_handler(func=lambda call: call.data == "back_to_record_selection")
     def handle_back_to_record_selection(call):
         try:
             bot.answer_callback_query(call.id)
             user_id = call.from_user.id
-            
+
             # Get the stored user records
             user_records = user_data.get_user_data(user_id).get("user_records")
-            
+
             if not user_records:
                 bot.send_message(call.message.chat.id, "❌ Ошибка: список записей не найден.")
                 return
-                
+
             # Show the record selection menu again
             show_record_selection_menu(bot, call.message.chat.id, user_records, call.message.message_id)
-            
+
         except Exception as e:
             logger.error(f"Error handling back to record selection: {str(e)}")
             bot.send_message(call.message.chat.id, "❌ Ошибка при возврате к выбору записи.")
-    
+
     def show_record_selection_menu(bot, chat_id, user_records, message_id=None):
         """Helper function to show the record selection menu"""
         markup = InlineKeyboardMarkup()
@@ -460,10 +460,10 @@ def setup_edit_handler(bot: TeleBot):
                 button_text,
                 callback_data=f"edit_record_{idx}"
             ))
-        
+
         # Add cancel button
         markup.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel_edit_operation"))
-        
+
         if message_id:
             # Edit existing message
             bot.edit_message_text(
