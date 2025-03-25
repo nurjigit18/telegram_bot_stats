@@ -10,6 +10,7 @@ import json
 import gspread
 from google.oauth2.service_account import Credentials
 
+
 logger = logging.getLogger(__name__)
 
 class GoogleSheetsManager:
@@ -64,14 +65,13 @@ def connect_to_google_sheets():
         "https://www.googleapis.com/auth/drive",
     ]
 
-    # Retrieve credentials from the environment variable
+    # Retrieve credentials from environment variable
     creds_json = os.getenv('GOOGLE_CREDS_JSON')
-
     if not creds_json:
         raise ValueError("Environment variable 'GOOGLE_CREDS_JSON' is not set.")
 
     try:
-        # Parse the JSON string into a dictionary
+        # Parse JSON string into a dictionary
         creds_dict = json.loads(creds_json)
 
         # Create credentials from the dictionary
@@ -88,10 +88,11 @@ def connect_to_google_sheets():
         sheet = client.open_by_key(sheet_id)
         return sheet
 
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON in 'GOOGLE_CREDS_JSON': {e}")
     except Exception as e:
-        logging.error(f"Failed to connect to Google Sheets: {str(e)}")
-        raise
-
+        raise RuntimeError(f"Failed to connect to Google Sheets: {e}")
+    
 def get_all_user_chat_ids():
     """Fetch all user chat IDs from Google Sheets"""
     sheets_manager = GoogleSheetsManager.get_instance()
