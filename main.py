@@ -54,9 +54,9 @@ logger = logging.getLogger(__name__)
 # Constants
 HEARTBEAT_FILE = 'heartbeat.txt'
 LOCK_FILE = 'bot.lock'
-MEMORY_LIMIT_MB = 400  # Set a memory limit below PythonAnywhere's limit (typically 512MB)
-MEMORY_CHECK_INTERVAL = 300  # Check memory every 5 minutes
-MAX_RUNTIME_SECONDS = 6000  # Restart after ~100 minutes to stay within free tier limits
+MEMORY_LIMIT_MB = 400 
+MEMORY_CHECK_INTERVAL = 900  # Check memory every 15 minutes
+MAX_RUNTIME_SECONDS = 48000  # Restart after ~8hours
 
 # Global state tracking
 class BotState:
@@ -225,10 +225,10 @@ def bot_polling(bot):
             logger.info("Bot is starting polling...")
             # Use conservative settings to avoid conflicts
             bot.infinity_polling(
-                timeout=5,
-                long_polling_timeout=10,
+                timeout=10,
+                long_polling_timeout=30,
                 none_stop=True,
-                interval=3,  # Poll every 3 seconds to reduce CPU usage
+                interval=30,  # Poll every 30 seconds to reduce CPU usage
                 allowed_updates=["message", "callback_query", "inline_query"]  # Only listen for needed updates
             )
         except Exception as e:
