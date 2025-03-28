@@ -231,7 +231,7 @@ def get_admin_ids():
         list: List of admin user IDs as integers
     """
     # Get admin IDs from environment variable
-    admin_ids_str = os.getenv('ADMIN_1', '')
+    admin_ids_str = os.getenv('ADMIN_1', 'ADMIN_2', 'ADMIN_3')
     admin_ids = []
     
     # Parse admin IDs
