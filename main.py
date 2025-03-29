@@ -177,11 +177,11 @@ def memory_monitor():
                 state.running = False
                 break
 
-            # Check if we should restart due to runtime
-            if runtime > MAX_RUNTIME_SECONDS:
-                logger.warning(f"Runtime too long ({runtime:.1f} seconds). Initiating restart.")
-                state.running = False
-                break
+            # # Check if we should restart due to runtime
+            # if runtime > MAX_RUNTIME_SECONDS:
+            #     logger.warning(f"Runtime too long ({runtime:.1f} seconds). Initiating restart.")
+            #     state.running = False
+            #     break
 
             # Force garbage collection to reduce memory usage
             collected = gc.collect()
