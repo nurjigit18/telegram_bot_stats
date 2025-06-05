@@ -4,10 +4,13 @@ from models.user_data import user_data
 from utils.keyboards import show_product_selection
 from utils.validators import validate_date, standardize_date, validate_amount, validate_size_amounts, parse_size_amounts
 from utils.google_sheets import GoogleSheetsManager
-
+import math
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Pagination settings
+ITEMS_PER_PAGE = 5  # Number of items to show per page
 
 def setup_edit_handlers(bot: TeleBot):
     @bot.callback_query_handler(func=lambda call: call.data.startswith("edit_") or call.data == "cancel_edit" or call.data.startswith("product_"))
@@ -106,6 +109,7 @@ def setup_edit_handlers(bot: TeleBot):
             bot.reply_to(message, f"❌ Ошибка при обновлении размеров: {str(e)}")
             user_data.clear_user_data(user_id)
 
+
 def setup_edit_handler(bot: TeleBot):
     @bot.message_handler(commands=['edit'])
     def handle_edit_command(message):
@@ -132,13 +136,114 @@ def setup_edit_handler(bot: TeleBot):
             # Store the list of user records in user_data for later use when returning to this menu
             user_data.initialize_user(user_id)
             user_data.update_user_data(user_id, "user_records", user_records)
+            user_data.update_user_data(user_id, "current_page", 0)  # Start from page 0
 
-            # Show the record selection menu
-            show_record_selection_menu(bot, message.chat.id, user_records)
+            # Show the record selection menu with pagination
+            show_record_selection_menu_paginated(bot, message.chat.id, user_records, 0)
 
         except Exception as e:
             logger.error(f"Error handling edit command: {str(e)}")
             bot.reply_to(message, "❌ Произошла ошибка при получении списка записей.")
+
+    def show_record_selection_menu_paginated(bot, chat_id, user_records, page, message_id=None):
+        """Helper function to show the paginated record selection menu"""
+        total_items = len(user_records)
+        total_pages = math.ceil(total_items / ITEMS_PER_PAGE)
+        
+        if page < 0:
+            page = 0
+        elif page >= total_pages:
+            page = total_pages - 1
+
+        start_idx = page * ITEMS_PER_PAGE
+        end_idx = min(start_idx + ITEMS_PER_PAGE, total_items)
+        page_records = user_records[start_idx:end_idx]
+
+        markup = InlineKeyboardMarkup()
+        
+        # Add product buttons for current page
+        for idx, record in page_records:
+            product_name = record[3] if len(record) > 3 else "Unknown"
+            product_color = record[7] if len(record) > 7 else "Unknown"
+            shipment_date = record[4] if len(record) > 4 else "Unknown"
+            button_text = f"{product_name} - {product_color} ({shipment_date})"
+            markup.add(InlineKeyboardButton(
+                button_text,
+                callback_data=f"edit_record_{idx}"
+            ))
+
+        # Add pagination buttons if needed
+        if total_pages > 1:
+            nav_buttons = []
+            
+            # Previous button
+            if page > 0:
+                nav_buttons.append(InlineKeyboardButton("⬅️ Предыдущая", callback_data=f"edit_page_{page-1}"))
+            
+            # Page indicator
+            nav_buttons.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="edit_current_page"))
+            
+            # Next button
+            if page < total_pages - 1:
+                nav_buttons.append(InlineKeyboardButton("Следующая ➡️", callback_data=f"edit_page_{page+1}"))
+            
+            markup.row(*nav_buttons)
+
+        # Add cancel button
+        markup.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel_edit_operation"))
+
+        message_text = f"📋 Выберите запись для редактирования:\n\nСтраница {page+1} из {total_pages} (всего записей: {total_items})"
+
+        if message_id:
+            bot.edit_message_text(
+                message_text,
+                chat_id,
+                message_id,
+                reply_markup=markup
+            )
+        else:
+            bot.send_message(
+                chat_id,
+                message_text,
+                reply_markup=markup
+            )
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("edit_page_"))
+    def handle_edit_page_navigation(call):
+        """Handle page navigation for edit records"""
+        try:
+            bot.answer_callback_query(call.id)
+            user_id = call.from_user.id
+            page = int(call.data.split("_")[2])
+            
+            # Get stored user records
+            user_records = user_data.get_user_data(user_id).get("user_records")
+            if not user_records:
+                bot.edit_message_text(
+                    "❌ Ошибка: список записей не найден.",
+                    call.message.chat.id,
+                    call.message.message_id
+                )
+                return
+
+            # Update current page in user data
+            user_data.update_user_data(user_id, "current_page", page)
+            
+            # Show the requested page
+            show_record_selection_menu_paginated(bot, call.message.chat.id, user_records, page, call.message.message_id)
+
+        except Exception as e:
+            logger.error(f"Error handling edit page navigation: {str(e)}")
+            bot.edit_message_text(
+                "❌ Ошибка при навигации по страницам.",
+                call.message.chat.id,
+                call.message.message_id
+            )
+
+    @bot.callback_query_handler(func=lambda call: call.data == "edit_current_page")
+    def handle_edit_current_page_click(call):
+        """Handle click on page indicator (no action needed)"""
+        bot.answer_callback_query(call.id, "Текущая страница")
 
     @bot.callback_query_handler(func=lambda call: call.data == "cancel_edit_operation")
     def handle_cancel_edit_operation(call):
@@ -170,22 +275,12 @@ def setup_edit_handler(bot: TeleBot):
             # Create markup for editable fields
             markup = InlineKeyboardMarkup()
             fields = [
-                # ("Изделие", "product_name", 3),
-                # ("Цвет", "product_color", 7),
-                # ("Дата отправки", "shipment_date", 4),
-                # ("Ожидаемая дата прибытия", "estimated_arrival", 5),
                 ("Фактическая дата прибытия", "actual_arrival", 6),
-                # ("Склад", "warehouse", 9),
-                # ("Общее количество", "total_amount", 8),
-                # ("Количество S", "s_amount", 10),
-                # ("Количество M", "m_amount", 11),
-                # ("Количество L", "l_amount", 12)
             ]
 
             for field_name, field_id, col_index in fields:
                 current_value = record[col_index] if len(record) > col_index else "Не указано"
                 button_text = f"Изменить {field_name} ({current_value})"
-                # Use a simpler callback data format
                 logger.info(f"Creating callback data: row_index={row_index}, field_id={field_id}, col_index={col_index}")
                 markup.add(InlineKeyboardButton(
                     button_text,
@@ -435,47 +530,22 @@ def setup_edit_handler(bot: TeleBot):
             bot.answer_callback_query(call.id)
             user_id = call.from_user.id
 
-            # Get the stored user records
-            user_records = user_data.get_user_data(user_id).get("user_records")
+            # Get the stored user records and current page
+            user_data_dict = user_data.get_user_data(user_id)
+            user_records = user_data_dict.get("user_records") if user_data_dict else None
+            current_page = user_data_dict.get("current_page", 0) if user_data_dict else 0
 
             if not user_records:
                 bot.send_message(call.message.chat.id, "❌ Ошибка: список записей не найден.")
                 return
 
-            # Show the record selection menu again
-            show_record_selection_menu(bot, call.message.chat.id, user_records, call.message.message_id)
+            # Show the record selection menu again with pagination
+            show_record_selection_menu_paginated(bot, call.message.chat.id, user_records, current_page, call.message.message_id)
 
         except Exception as e:
             logger.error(f"Error handling back to record selection: {str(e)}")
             bot.send_message(call.message.chat.id, "❌ Ошибка при возврате к выбору записи.")
 
     def show_record_selection_menu(bot, chat_id, user_records, message_id=None):
-        """Helper function to show the record selection menu"""
-        markup = InlineKeyboardMarkup()
-        for idx, record in user_records:
-            product_name = record[3] if len(record) > 3 else "Unknown"
-            product_color = record[7] if len(record) > 7 else "Unknown"
-            button_text = f"{product_name} - {product_color}"
-            markup.add(InlineKeyboardButton(
-                button_text,
-                callback_data=f"edit_record_{idx}"
-            ))
-
-        # Add cancel button
-        markup.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel_edit_operation"))
-
-        if message_id:
-            # Edit existing message
-            bot.edit_message_text(
-                "📋 Выберите запись для редактирования:",
-                chat_id,
-                message_id,
-                reply_markup=markup
-            )
-        else:
-            # Send new message
-            bot.send_message(
-                chat_id,
-                "📋 Выберите запись для редактирования:",
-                reply_markup=markup
-            )
+        """Helper function to show the record selection menu (backward compatibility)"""
+        show_record_selection_menu_paginated(bot, chat_id, user_records, 0, message_id)
