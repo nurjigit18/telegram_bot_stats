@@ -5,10 +5,13 @@ from utils.google_sheets import GoogleSheetsManager
 import logging
 from config import ADMIN_USER_USERNAMES
 from utils.keyboards import show_product_selection
-from datetime import datetime  # Add this import at the top of your file
-
+from datetime import datetime
+import math
 
 logger = logging.getLogger(__name__)
+
+# Pagination settings
+ITEMS_PER_PAGE = 5  # Number of items to show per page
 
 def setup_status_handler(bot: TeleBot):
     @bot.message_handler(commands=['status'])
@@ -16,7 +19,7 @@ def setup_status_handler(bot: TeleBot):
         """Allow users to check status of their shipments"""
         user_id = message.from_user.id
 
-        # Show only user's products
+        # Show only user's products with pagination
         try:
             sheets_manager = GoogleSheetsManager.get_instance()
             worksheet = sheets_manager.get_main_worksheet()
@@ -27,35 +30,125 @@ def setup_status_handler(bot: TeleBot):
                 bot.send_message(message.chat.id, "Нет доступных записей для просмотра.")
                 return
 
-            markup = InlineKeyboardMarkup()
-            # Start from 1 to skip header row
-            user_records = []  # Store records for the user
+            # Filter records by user_id
+            user_records = []
             for idx, row in enumerate(all_records[1:], start=2):  # start=2 because row 1 is header
                 # Filter by user_id (assuming user_id is in column 2)
                 if row[1] == str(user_id):
-                    product_info = f"{row[3]} - {row[7]} ({row[4]})"  # product_name - color (date)
-                    markup.add(InlineKeyboardButton(
-                        text=product_info,
-                        callback_data=f"view_status_{idx}"
-                    ))
-                    user_records.append((idx, row))  # Store the record
+                    user_records.append((idx, row))
 
-            if not markup.keyboard:  # No products found for the user
+            if not user_records:  # No products found for the user
                 bot.send_message(message.chat.id, "Нет доступных записей для просмотра.")
                 return
 
             # Store user_records in user_data
             user_data.initialize_user(user_id)
-            user_data.update_user_data(user_id, "user_records", user_records)  # Store for later
+            user_data.update_user_data(user_id, "user_records", user_records)
+            user_data.update_user_data(user_id, "current_page", 0)  # Start from page 0
 
-            # Add cancel button
-            markup.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel_edit"))
-
-            bot.send_message(message.chat.id, "Выберите изделие для просмотра статуса:", reply_markup=markup)
+            # Show first page
+            show_status_list_paginated(bot, message.chat.id, user_records, 0)
 
         except Exception as e:
             logger.error(f"Error showing product selection: {str(e)}")
             bot.send_message(message.chat.id, "Произошла ошибка при загрузке списка записей.")
+
+    def show_status_list_paginated(bot, chat_id, user_records, page, message_id=None):
+        """Display paginated list of user records"""
+        total_items = len(user_records)
+        total_pages = math.ceil(total_items / ITEMS_PER_PAGE)
+        
+        if page < 0:
+            page = 0
+        elif page >= total_pages:
+            page = total_pages - 1
+
+        start_idx = page * ITEMS_PER_PAGE
+        end_idx = min(start_idx + ITEMS_PER_PAGE, total_items)
+        page_records = user_records[start_idx:end_idx]
+
+        markup = InlineKeyboardMarkup()
+        
+        # Add product buttons for current page
+        for idx, record in page_records:
+            product_info = f"{record[3]} - {record[7]} ({record[4]})"  # product_name - color (date)
+            markup.add(InlineKeyboardButton(
+                text=product_info,
+                callback_data=f"view_status_{idx}"
+            ))
+
+        # Add pagination buttons if needed
+        if total_pages > 1:
+            nav_buttons = []
+            
+            # Previous button
+            if page > 0:
+                nav_buttons.append(InlineKeyboardButton("⬅️ Предыдущая", callback_data=f"page_{page-1}"))
+            
+            # Page indicator
+            nav_buttons.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="current_page"))
+            
+            # Next button
+            if page < total_pages - 1:
+                nav_buttons.append(InlineKeyboardButton("Следующая ➡️", callback_data=f"page_{page+1}"))
+            
+            markup.row(*nav_buttons)
+
+        # Add cancel button
+        markup.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel_edit"))
+
+        message_text = f"Выберите изделие для просмотра статуса:\n\nСтраница {page+1} из {total_pages} (всего записей: {total_items})"
+
+        if message_id:
+            bot.edit_message_text(
+                message_text,
+                chat_id,
+                message_id,
+                reply_markup=markup
+            )
+        else:
+            bot.send_message(
+                chat_id,
+                message_text,
+                reply_markup=markup
+            )
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("page_"))
+    def handle_page_navigation(call):
+        """Handle page navigation"""
+        try:
+            bot.answer_callback_query(call.id)
+            user_id = call.from_user.id
+            page = int(call.data.split("_")[1])
+            
+            # Get stored user records
+            user_records = user_data.get_user_data(user_id).get("user_records")
+            if not user_records:
+                bot.edit_message_text(
+                    "❌ Ошибка: список записей не найден.",
+                    call.message.chat.id,
+                    call.message.message_id
+                )
+                return
+
+            # Update current page in user data
+            user_data.update_user_data(user_id, "current_page", page)
+            
+            # Show the requested page
+            show_status_list_paginated(bot, call.message.chat.id, user_records, page, call.message.message_id)
+
+        except Exception as e:
+            logger.error(f"Error handling page navigation: {str(e)}")
+            bot.edit_message_text(
+                "❌ Ошибка при навигации по страницам.",
+                call.message.chat.id,
+                call.message.message_id
+            )
+
+    @bot.callback_query_handler(func=lambda call: call.data == "current_page")
+    def handle_current_page_click(call):
+        """Handle click on page indicator (no action needed)"""
+        bot.answer_callback_query(call.id, "Текущая страница")
 
     @bot.callback_query_handler(func=lambda call: call.data.startswith("view_status_"))
     def handle_status_selection(call):
@@ -93,45 +186,20 @@ def setup_status_handler(bot: TeleBot):
         try:
             user_id = call.from_user.id
 
-            # Retrieve the stored user_records from user_data
+            # Retrieve the stored user_records and current page from user_data
             user_records = user_data.get_user_data(user_id).get("user_records")
+            current_page = user_data.get_user_data(user_id).get("current_page", 0)
 
             if not user_records:
                 bot.send_message(call.message.chat.id, "❌ Ошибка: список записей не найден.")
                 return
 
-            # Re-display the status list using the stored user_records
-            show_status_list(bot, call.message.chat.id, user_records, call.message.message_id)
+            # Re-display the status list using the stored user_records and current page
+            show_status_list_paginated(bot, call.message.chat.id, user_records, current_page, call.message.message_id)
 
         except Exception as e:
             logger.error(f"Error handling back to status list: {str(e)}")
             bot.send_message(call.message.chat.id, "❌ Ошибка при возврате к списку статусов.")
-
-    def show_status_list(bot, chat_id, user_records, message_id=None):
-        markup = InlineKeyboardMarkup()
-        for idx, record in user_records:
-            product_info = f"{record[3]} - {record[7]} ({record[4]})"  # product_name - color (date)
-            markup.add(InlineKeyboardButton(
-                text=product_info,
-                callback_data=f"view_status_{idx}"
-            ))
-
-        # Add cancel button
-        markup.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel_edit"))
-
-        if message_id:
-            bot.edit_message_text(
-                "Выберите изделие для просмотра статуса:",
-                chat_id,
-                message_id,
-                reply_markup=markup
-            )
-        else:
-            bot.send_message(
-                chat_id,
-                "Выберите изделие для просмотра статуса:",
-                reply_markup=markup
-            )
 
     @bot.callback_query_handler(func=lambda call: call.data.startswith("info_"))
     def show_product_info(call):
@@ -268,4 +336,3 @@ def setup_status_handler(bot: TeleBot):
             bot.send_message(message.chat.id, "❌ Ошибка при обновлении статуса.")
             # Still clear the row index in case of error
             user_data.set_row_index(message.from_user.id, None)
-
