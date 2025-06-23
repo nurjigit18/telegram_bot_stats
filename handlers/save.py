@@ -2,7 +2,7 @@ from telebot import TeleBot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from constants import PROMPTS, STEPS
 from models.user_data import user_data
-from utils.validators import validate_date, validate_amount, validate_size_amounts, parse_size_amounts, standardize_date
+from utils.validators import validate_date, validate_amount, validate_size_amounts, parse_size_amounts, standardize_date, validate_warehouse_sizes
 from utils.google_sheets import save_to_sheets, GoogleSheetsManager
 from config import ADMIN_USER_USERNAMES
 from datetime import datetime
@@ -10,6 +10,59 @@ import logging
 import re
 
 logger = logging.getLogger(__name__)
+
+def parse_warehouse_sizes(warehouse_sizes_str):
+    """
+    Parse warehouse and sizes string into structured data
+    
+    Formats supported:
+    - Single warehouse: "Казань: S-50 M-25 L-25"
+    - Multiple warehouses: "Казань: S-30 M-40 | Москва: L-50 XL-80"
+    
+    Returns: List of tuples [(warehouse_name, {size: quantity})]
+    """
+    try:
+        warehouse_data = []
+        
+        # Split by | for multiple warehouses
+        warehouse_parts = [part.strip() for part in warehouse_sizes_str.split('|')]
+        
+        for warehouse_part in warehouse_parts:
+            if ':' not in warehouse_part:
+                return None  # Invalid format
+            
+            warehouse_name, sizes_str = warehouse_part.split(':', 1)
+            warehouse_name = warehouse_name.strip()
+            sizes_str = sizes_str.strip()
+            
+            # Parse sizes (format: S-50 M-25 L-25)
+            sizes = {}
+            size_parts = sizes_str.split()
+            
+            for size_part in size_parts:
+                if '-' not in size_part:
+                    return None  # Invalid format
+                
+                size, quantity_str = size_part.split('-', 1)
+                size = size.strip().upper()
+                
+                try:
+                    quantity = int(quantity_str.strip())
+                    if quantity <= 0:
+                        return None  # Invalid quantity
+                    sizes[size] = quantity
+                except ValueError:
+                    return None  # Invalid number
+            
+            if not sizes:
+                return None  # No sizes found
+            
+            warehouse_data.append((warehouse_name, sizes))
+        
+        return warehouse_data if warehouse_data else None
+        
+    except Exception:
+        return None
 
 def setup_save_handler(bot: TeleBot):
     @bot.message_handler(commands=['save'])
@@ -29,18 +82,29 @@ def setup_save_handler(bot: TeleBot):
             "Название изделия:\n"
             "Цвет изделия:\n"
             "Количество (шт):\n"
-            "Склад:\n"
-            "Количество на каждый размер (S: 50 M: 25 L: 50):\n"
+            "Склады и размеры:\n"
             "Дата отправки (дд/мм/гггг):\n"
             "Дата возможного прибытия (дд/мм/гггг):\n\n"
-            "💡 Пример:\n"
+            "💡 Примеры:\n\n"
+            "🔹 Один склад:\n"
             "рубашка\n"
             "красный\n"
             "100\n"
-            "Казань, Москва\n"
-            "S: 50 M: 25 L: 25\n"
+            "Казань: S-50 M-25 L-25\n"
             "12.12.2021\n"
             "15/12/2021\n\n"
+            "🔹 Несколько складов:\n"
+            "рубашка\n"
+            "синий\n"
+            "200\n"
+            "Казань: S-30 M-40 | Москва: L-50 XL-80\n"
+            "12.12.2021\n"
+            "15/12/2021\n\n"
+            "📝 Формат складов и размеров:\n"
+            "• Один склад: Склад: размер-количество размер-количество\n"
+            "• Несколько складов: Склад1: размеры | Склад2: размеры\n"
+            "• Разделитель складов: | (вертикальная черта)\n"
+            "• Разделитель размеров: - (дефис)\n\n"
             "Нажмите /cancel для отмены заполнения."
         )
         bot.reply_to(message, sample_format)
@@ -63,7 +127,7 @@ def setup_save_handler(bot: TeleBot):
             lines = [line.strip() for line in message.text.strip().split('\n') if line.strip()]
             
             # Check if we have the correct number of lines
-            expected_fields = 7
+            expected_fields = 6  # Changed from 7 to 6 (removed separate warehouse and size fields)
             if len(lines) != expected_fields:
                 error_msg = (
                     f"❌ Неверное количество полей. Ожидается {expected_fields} строк, получено {len(lines)}.\n\n"
@@ -71,10 +135,9 @@ def setup_save_handler(bot: TeleBot):
                     "1. Название изделия\n"
                     "2. Цвет изделия\n"
                     "3. Количество (шт)\n"
-                    "4. Склад\n"
-                    "5. Количество на каждый размер\n"
-                    "6. Дата отправки\n"
-                    "7. Дата возможного прибытия"
+                    "4. Склады и размеры\n"
+                    "5. Дата отправки\n"
+                    "6. Дата возможного прибытия"
                 )
                 bot.reply_to(message, error_msg)
                 return
@@ -83,10 +146,9 @@ def setup_save_handler(bot: TeleBot):
             product_name = lines[0]
             product_color = lines[1]
             total_amount_str = lines[2]
-            warehouse = lines[3]
-            size_amounts_str = lines[4]
-            shipment_date_str = lines[5]
-            estimated_arrival_str = lines[6]
+            warehouse_sizes_str = lines[3]  # Combined warehouse and sizes
+            shipment_date_str = lines[4]    # Updated index
+            estimated_arrival_str = lines[5]  # Updated index
 
             errors = []
 
@@ -104,15 +166,18 @@ def setup_save_handler(bot: TeleBot):
             else:
                 total_amount = int(total_amount_str)
 
-            # Validate warehouse
-            if not warehouse:
-                errors.append("• Склад не может быть пустым")
-
-            # Validate size amounts
-            if not validate_size_amounts(size_amounts_str):
-                errors.append("• Неверный формат количества по размерам. Используйте формат 'S: 50 M: 25 L: 50'")
+            # Validate warehouse and sizes format
+            if not validate_warehouse_sizes(warehouse_sizes_str):
+                errors.append("• Неверный формат складов и размеров. Используйте формат 'Склад1: S-50 M-25 | Склад2: L-30'")
             else:
-                size_amounts = parse_size_amounts(size_amounts_str)
+                warehouse_data = parse_warehouse_sizes(warehouse_sizes_str)
+                if not warehouse_data:
+                    errors.append("• Ошибка при разборе складов и размеров")
+                else:
+                    # Validate that total amounts match
+                    calculated_total = sum(sum(sizes.values()) for _, sizes in warehouse_data)
+                    if calculated_total != total_amount:
+                        errors.append(f"• Сумма размеров ({calculated_total}) не совпадает с общим количеством ({total_amount})")
 
             # Validate shipment date
             if not validate_date(shipment_date_str):
@@ -134,52 +199,56 @@ def setup_save_handler(bot: TeleBot):
                 return
 
             # If validation passed, save the data
-            form_data = {
-                'product_name': product_name,
-                'product_color': product_color,
-                'total_amount': total_amount,
-                'warehouse': warehouse,
-                'shipment_date': shipment_date,
-                'estimated_arrival': estimated_arrival
-            }
+            # For multiple warehouses, we'll create multiple records
+            for warehouse_name, sizes in warehouse_data:
+                form_data = {
+                    'product_name': product_name,
+                    'product_color': product_color,
+                    'total_amount': sum(sizes.values()),  # Amount for this warehouse
+                    'warehouse': warehouse_name,
+                    'shipment_date': shipment_date,
+                    'estimated_arrival': estimated_arrival
+                }
 
-            # Add size amounts to form data
-            for size_key, size_value in size_amounts.items():
-                form_data[size_key] = size_value
+                # Add size amounts to form data
+                for size_key, size_value in sizes.items():
+                    form_data[size_key] = size_value
 
-            # Update user data with all form data
-            for key, value in form_data.items():
-                user_data.update_form_data(user_id, key, value)
+                # Update user data with form data for this warehouse
+                for key, value in form_data.items():
+                    user_data.update_form_data(user_id, key, value)
+
+                # Save to Google Sheets for each warehouse
+                try:
+                    row_index = save_to_sheets(bot, message)
+                    # Notify admins about the new record
+                    notify_admins_about_new_record(bot, message, row_index)
+                except Exception as e:
+                    logger.error(f"Error saving warehouse {warehouse_name}: {str(e)}")
+                    bot.reply_to(message, f"❌ Ошибка при сохранении данных для склада {warehouse_name}")
+                    user_data.clear_user_data(user_id)
+                    return
 
             # Show confirmation message with all data
+            warehouse_summary = []
+            for warehouse_name, sizes in warehouse_data:
+                size_str = ", ".join([f"{size}: {qty}" for size, qty in sizes.items()])
+                warehouse_summary.append(f"🏪 {warehouse_name}: {size_str}")
+
             confirmation_msg = (
-                "✅ Данные успешно получены!\n\n"
+                "✅ Данные успешно сохранены!\n\n"
                 f"📦 Название изделия: {product_name}\n"
                 f"🎨 Цвет изделия: {product_color}\n"
                 f"📊 Общее количество: {total_amount} шт\n"
-                f"🏪 Склад: {warehouse}\n"
-                f"📏 Количество по размерам: {size_amounts_str}\n"
+                + "\n".join(warehouse_summary) + "\n"
                 f"📅 Дата отправки: {shipment_date}\n"
                 f"📅 Дата прибытия: {estimated_arrival}\n\n"
-                "Сохраняю данные..."
+                f"Создано записей: {len(warehouse_data)}"
             )
             bot.reply_to(message, confirmation_msg)
 
-            # Save to Google Sheets
-            try:
-                row_index = save_to_sheets(bot, message)
-                bot.send_message(message.chat.id, "✅ Данные успешно сохранены в таблицу!")
-                
-                # Notify admins about the new record
-                notify_admins_about_new_record(bot, message, row_index)
-                
-                # Clear user data
-                user_data.clear_user_data(user_id)
-                
-            except Exception as e:
-                logger.error(f"Error in save_to_sheets: {str(e)}")
-                bot.reply_to(message, "❌ Произошла ошибка при сохранении данных. Попробуйте еще раз.")
-                user_data.clear_user_data(user_id)
+            # Clear user data
+            user_data.clear_user_data(user_id)
 
         except Exception as e:
             logger.error(f"Error in handle_single_save_input: {str(e)}")
