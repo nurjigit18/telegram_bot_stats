@@ -175,18 +175,6 @@ def save_to_sheets(bot, message):
         sheets_manager.get_main_worksheet().append_row(row_data)
         logger.info(f"Saved product data from {username} to Google Sheets")
 
-        # Send confirmation and summary
-        summary = (
-            "✅ Данные записаны!\n\n"
-            f"Изделие: {form_data.get('product_name')}\n"
-            f"Цвет: {form_data.get('product_color')}\n"
-            f"Дата отправки: {form_data.get('shipment_date')}\n"
-            f"Дата возможного прибытия: {form_data.get('estimated_arrival')}\n"
-            f"Склад: {form_data.get('warehouse')}\n"
-            f"Общее количество: {form_data.get('total_amount')} шт\n"
-            f"Размеры: {form_data.get('sizes_data')}"
-        )
-        bot.send_message(message.chat.id, summary)
 
         # Clear user data using the UserData class method
         user_data.clear_user_data(user_id)
