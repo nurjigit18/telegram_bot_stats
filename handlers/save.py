@@ -1,419 +1,497 @@
+import gspread
 from telebot import TeleBot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-from constants import PROMPTS, STEPS
-from models.user_data import user_data
-from utils.validators import validate_date, validate_amount, validate_size_amounts, parse_size_amounts, standardize_date, validate_warehouse_sizes
-from utils.google_sheets import save_to_sheets, GoogleSheetsManager
-from config import ADMIN_USER_USERNAMES
-from datetime import datetime
+from oauth2client.service_account import ServiceAccountCredentials
+from config import GOOGLE_CREDS_FILE, SHEET_ID
 import logging
+from datetime import datetime, timedelta
+from models.user_data import user_data
+import os
+import json
+import gspread
+from google.oauth2.service_account import Credentials
 import re
+
 
 logger = logging.getLogger(__name__)
 
-def parse_warehouse_sizes(warehouse_sizes_str):
-    """
-    Parse warehouse and sizes string into structured data
-    
-    Formats supported:
-    - Single warehouse: "Казань: S-50 M-25 L-25"
-    - Multiple warehouses: "Казань: S-30 M-40 | Москва: L-50 XL-80"
-    
-    Returns: List of tuples [(warehouse_name, {size: quantity})]
-    """
+class GoogleSheetsManager:
+    _instance = None
+    _spreadsheet = None
+
+    @classmethod
+    def get_instance(cls):
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
+    def __init__(self):
+        self.main_worksheet = None
+        self.users_worksheet = None
+        self.connect()
+
+    def connect(self):
+        try:
+            # Define the scope
+            scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+
+            # Retrieve credentials from environment variable
+            creds_json = os.getenv('GOOGLE_CREDS_JSON')
+            if not creds_json:
+                raise ValueError("Environment variable 'GOOGLE_CREDS_JSON' is not set.")
+
+            # Parse JSON string into a dictionary
+            creds_dict = json.loads(creds_json)
+
+            # Create credentials from the dictionary
+            credentials = Credentials.from_service_account_info(creds_dict, scopes=scope)
+
+            # Authorize the client
+            gc = gspread.authorize(credentials)
+
+            # Retrieve Google Sheet ID from environment variable
+            sheet_id = os.getenv("SHEET_ID")
+            if not sheet_id:
+                raise ValueError("Environment variable 'SHEET_ID' is not set.")
+
+            # Open the Google Sheet
+            self._spreadsheet = gc.open_by_key(sheet_id)
+            self.main_worksheet = self._spreadsheet.sheet1
+
+            # Try to get or create Users worksheet
+            try:
+                self.users_worksheet = self._spreadsheet.worksheet("Users")
+            except gspread.WorksheetNotFound:
+                self.users_worksheet = self._spreadsheet.add_worksheet("Users", 1000, 3)
+                # Add headers
+                self.users_worksheet.update('A1:C1', [['chat_id', 'username', 'registration_date']])
+
+            logger.info(f"Connected to Google Sheet with ID: {sheet_id}")
+        except Exception as e:
+            logger.error(f"Failed to connect to Google Sheets: {str(e)}")
+            raise
+
+    def get_main_worksheet(self):
+        if self.main_worksheet is None:
+            self.connect()
+        return self.main_worksheet
+
+    def get_users_worksheet(self):
+        if self.users_worksheet is None:
+            self.connect()
+        return self.users_worksheet
+
+    def get_spreadsheet(self):
+        if self._spreadsheet is None:
+            self.connect()
+        return self._spreadsheet
+
+
+def connect_to_google_sheets():
+    """Alternative connection method for backward compatibility"""
+    # Define the scope
+    scope = [
+        "https://spreadsheets.google.com/feeds",
+        "https://www.googleapis.com/auth/drive",
+    ]
+
+    # Retrieve credentials from environment variable
+    creds_json = os.getenv('GOOGLE_CREDS_JSON')
+    if not creds_json:
+        raise ValueError("Environment variable 'GOOGLE_CREDS_JSON' is not set.")
+
     try:
-        warehouse_data = []
+        # Parse JSON string into a dictionary
+        creds_dict = json.loads(creds_json)
+
+        # Create credentials from the dictionary
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
+
+        # Authorize the client
+        client = gspread.authorize(creds)
+
+        # Open the Google Sheet
+        sheet_id = os.getenv("SHEET_ID")
+        if not sheet_id:
+            raise ValueError("SHEET_ID environment variable is not set.")
+
+        sheet = client.open_by_key(sheet_id)
+        return sheet
+
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON in 'GOOGLE_CREDS_JSON': {e}")
+    except Exception as e:
+        raise RuntimeError(f"Failed to connect to Google Sheets: {e}")
+    
+
+def get_all_user_chat_ids():
+    """Fetch all user chat IDs from Google Sheets"""
+    sheets_manager = GoogleSheetsManager.get_instance()
+    try:
+        users_sheet = sheets_manager.get_users_worksheet()
+        user_data_list = users_sheet.get_all_values()
+        if len(user_data_list) <= 1:  # Only headers exist
+            return []
+
+        # Skip header row and extract chat IDs
+        chat_ids = [int(row[0]) for row in user_data_list[1:] if row and row[0]]
+        return chat_ids
+    except Exception as e:
+        logger.error(f"Error fetching user chat IDs: {str(e)}")
+        return []
+
+
+def register_user(chat_id, username=None):
+    """Register a new user in the Users worksheet"""
+    sheets_manager = GoogleSheetsManager.get_instance()
+    try:
+        users_sheet = sheets_manager.get_users_worksheet()
         
-        # Split by | for multiple warehouses
-        warehouse_parts = [part.strip() for part in warehouse_sizes_str.split('|')]
+        # Check if user already exists
+        existing_chat_ids = get_all_user_chat_ids()
+        if chat_id in existing_chat_ids:
+            logger.info(f"User {chat_id} already registered")
+            return True
         
-        for warehouse_part in warehouse_parts:
-            if ':' not in warehouse_part:
-                return None  # Invalid format
-            
-            warehouse_name, sizes_str = warehouse_part.split(':', 1)
+        # Add new user
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        user_row = [chat_id, username or "Unknown", timestamp]
+        users_sheet.append_row(user_row)
+        
+        logger.info(f"Registered new user: {chat_id} ({username})")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error registering user {chat_id}: {str(e)}")
+        return False
+
+
+def parse_sizes_data(sizes_data_str):
+    """
+    Parse sizes data string into structured format
+    Input: "Казань: S-30 M-40 | Москва: L-50 XL-80"
+    Output: [
+        {"warehouse": "Казань", "sizes": {"S": 30, "M": 40}},
+        {"warehouse": "Москва", "sizes": {"L": 50, "XL": 80}}
+    ]
+    """
+    if not sizes_data_str:
+        logger.warning("Empty sizes data string")
+        return []
+    
+    warehouses = []
+    
+    try:
+        # Split by | to get each warehouse
+        warehouse_parts = sizes_data_str.split('|')
+        
+        for part in warehouse_parts:
+            part = part.strip()
+            if ':' not in part:
+                logger.warning(f"Invalid warehouse format (no colon): {part}")
+                continue
+                
+            warehouse_name, sizes_str = part.split(':', 1)
             warehouse_name = warehouse_name.strip()
             sizes_str = sizes_str.strip()
             
-            # Parse sizes (format: S-50 M-25 L-25)
+            # Parse sizes: "S-30 M-40" -> {"S": 30, "M": 40}
             sizes = {}
             size_parts = sizes_str.split()
             
             for size_part in size_parts:
-                if '-' not in size_part:
-                    return None  # Invalid format
-                
-                size, quantity_str = size_part.split('-', 1)
-                size = size.strip().upper()
+                if '-' in size_part:
+                    size_name, quantity = size_part.split('-', 1)
+                    try:
+                        sizes[size_name.strip()] = int(quantity.strip())
+                    except ValueError:
+                        logger.warning(f"Could not parse quantity: {quantity}")
+                else:
+                    logger.warning(f"Invalid size format (no dash): {size_part}")
+            
+            if sizes:  # Only add if we have valid sizes
+                warehouses.append({
+                    "warehouse": warehouse_name,
+                    "sizes": sizes
+                })
+            else:
+                logger.warning(f"No valid sizes found for warehouse: {warehouse_name}")
+        
+    except Exception as e:
+        logger.error(f"Error parsing sizes data '{sizes_data_str}': {str(e)}")
+    
+    return warehouses
+
+
+def validate_form_data(form_data):
+    """Validate form data before saving"""
+    required_fields = [
+        "product_name", "shipment_date", "estimated_arrival", 
+        "product_color", "total_amount", "sizes_data"
+    ]
+    
+    missing_fields = []
+    for field in required_fields:
+        if not form_data.get(field):
+            missing_fields.append(field)
+    
+    if missing_fields:
+        logger.error(f"Missing required fields: {missing_fields}")
+        return False, missing_fields
+    
+    # Validate dates format (assuming DD/MM/YYYY format)
+    try:
+        datetime.strptime(form_data["shipment_date"], "%d/%m/%Y")
+        datetime.strptime(form_data["estimated_arrival"], "%d/%m/%Y")
+    except ValueError as e:
+        logger.error(f"Invalid date format: {str(e)}")
+        return False, ["date_format"]
+    
+    # Validate total amount is numeric
+    try:
+        int(form_data["total_amount"])
+    except ValueError:
+        logger.error(f"Invalid total amount: {form_data['total_amount']}")
+        return False, ["total_amount"]
+    
+    return True, []
+
+
+def save_to_sheets(bot, message):
+    """Save completed form data to Google Sheets"""
+    sheets_manager = GoogleSheetsManager.get_instance()
+    user_id = message.from_user.id
+    username = message.from_user.username or "Unknown"
+
+    # Use the UserData class method to get form data
+    form_data = user_data.get_form_data(user_id)
+
+    if not form_data:
+        logger.error(f"No form data found for user_id: {user_id}")
+        bot.send_message(message.chat.id, "❌ Данные пользователя не найдены.")
+        return
+
+    # Validate form data
+    is_valid, validation_errors = validate_form_data(form_data)
+    if not is_valid:
+        logger.error(f"Form validation failed for user {user_id}: {validation_errors}")
+        bot.send_message(message.chat.id, f"❌ Ошибка валидации данных: {', '.join(validation_errors)}")
+        return
+
+    try:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Parse the sizes data
+        sizes_data_str = form_data.get("sizes_data", "")
+        parsed_warehouses = parse_sizes_data(sizes_data_str)
+        
+        if not parsed_warehouses:
+            logger.error(f"Could not parse sizes data: {sizes_data_str}")
+            bot.send_message(message.chat.id, "❌ Ошибка при разборе данных о размерах. Проверьте формат: Склад: Размер-Количество")
+            return
+        
+        records_created = 0
+        worksheet = sheets_manager.get_main_worksheet()
+        
+        # Ensure worksheet has headers (add them if they don't exist)
+        try:
+            headers = worksheet.row_values(1)
+            if not headers or len(headers) < 11:
+                header_row = [
+                    "Timestamp", "User ID", "Username", "Product Name", 
+                    "Shipment Date", "Estimated Arrival", "Actual Arrival",
+                    "Product Color", "Quantity", "Warehouse", "Sizes"
+                ]
+                worksheet.update('A1:K1', [header_row])
+                logger.info("Added headers to main worksheet")
+        except Exception as e:
+            logger.warning(f"Could not check/add headers: {str(e)}")
+        
+        # Create a separate row for each warehouse
+        for warehouse_data in parsed_warehouses:
+            warehouse_name = warehouse_data["warehouse"]
+            sizes = warehouse_data["sizes"]
+            
+            # Calculate total quantity for this warehouse
+            warehouse_total = sum(sizes.values())
+            
+            # Format sizes as string: "S: 30, M: 40"
+            sizes_formatted = ", ".join([f"{size}: {qty}" for size, qty in sizes.items()])
+            
+            # Prepare row data for this warehouse
+            row_data = [
+                timestamp,
+                str(user_id),
+                username,
+                form_data.get("product_name"),
+                form_data.get("shipment_date"),
+                form_data.get("estimated_arrival"),
+                "",  # Actual arrival date (empty initially)
+                form_data.get("product_color"),
+                str(warehouse_total),  # Total for this warehouse
+                warehouse_name,        # Warehouse name
+                sizes_formatted        # Formatted sizes for this warehouse
+            ]
+            
+            # Save to Google Sheets
+            worksheet.append_row(row_data)
+            records_created += 1
+            logger.info(f"Saved warehouse '{warehouse_name}' data from {username} to Google Sheets")
+        
+        # Register user if not already registered
+        register_user(user_id, username)
+        
+        # Calculate grand total across all warehouses
+        grand_total = sum([sum(w["sizes"].values()) for w in parsed_warehouses])
+        
+        # Send success message
+        success_message = f"✅ Данные успешно сохранены!\n"
+        success_message += f"📦 Название изделия: {form_data.get('product_name')}\n"
+        success_message += f"🎨 Цвет изделия: {form_data.get('product_color')}\n"
+        success_message += f"📊 Общее количество: {grand_total} шт\n"
+        
+        # Add warehouse details
+        for warehouse_data in parsed_warehouses:
+            warehouse_name = warehouse_data["warehouse"]
+            sizes = warehouse_data["sizes"]
+            sizes_str = ", ".join([f"{size}: {qty}" for size, qty in sizes.items()])
+            success_message += f"🏪 {warehouse_name}: {sizes_str}\n"
+        
+        success_message += f"📅 Дата отправки: {form_data.get('shipment_date')}\n"
+        success_message += f"📅 Дата прибытия: {form_data.get('estimated_arrival')}\n"
+        success_message += f"Создано записей: {records_created}"
+        
+        bot.send_message(message.chat.id, success_message)
+
+        # Clear user data using the UserData class method
+        user_data.clear_user_data(user_id)
+        logger.info(f"Successfully processed and saved data for user {user_id}")
+
+    except Exception as e:
+        logger.error(f"Error saving to Google Sheets: {str(e)}")
+        error_message = "❌ Ошибка при сохранении данных. "
+        if "quota" in str(e).lower():
+            error_message += "Превышен лимит запросов к Google Sheets. Попробуйте позже."
+        elif "permission" in str(e).lower():
+            error_message += "Нет прав доступа к таблице."
+        else:
+            error_message += "Попробуйте еще раз с помощью /save"
+        
+        bot.send_message(message.chat.id, error_message)
+        user_data.clear_user_data(user_id)  # Clear user data in case of error
+
+
+def get_user_submissions(user_id, limit=10):
+    """Get recent submissions for a specific user"""
+    sheets_manager = GoogleSheetsManager.get_instance()
+    try:
+        worksheet = sheets_manager.get_main_worksheet()
+        all_data = worksheet.get_all_values()
+        
+        if len(all_data) <= 1:  # Only headers or empty
+            return []
+        
+        # Filter submissions by user_id
+        user_submissions = []
+        for row in all_data[1:]:  # Skip header row
+            if len(row) >= 2 and row[1] == str(user_id):  # User ID is in column B (index 1)
+                user_submissions.append(row)
+        
+        # Return most recent submissions (limited)
+        return user_submissions[-limit:] if len(user_submissions) > limit else user_submissions
+        
+    except Exception as e:
+        logger.error(f"Error fetching user submissions: {str(e)}")
+        return []
+
+
+def get_warehouse_summary():
+    """Get summary of all warehouses and their inventory"""
+    sheets_manager = GoogleSheetsManager.get_instance()
+    try:
+        worksheet = sheets_manager.get_main_worksheet()
+        all_data = worksheet.get_all_values()
+        
+        if len(all_data) <= 1:  # Only headers or empty
+            return {}
+        
+        warehouse_summary = {}
+        
+        for row in all_data[1:]:  # Skip header row
+            if len(row) >= 10:  # Ensure we have warehouse data
+                warehouse = row[9]  # Warehouse column
+                quantity = row[8]   # Quantity column
                 
                 try:
-                    quantity = int(quantity_str.strip())
-                    if quantity <= 0:
-                        return None  # Invalid quantity
-                    sizes[size] = quantity
+                    qty = int(quantity)
+                    if warehouse in warehouse_summary:
+                        warehouse_summary[warehouse] += qty
+                    else:
+                        warehouse_summary[warehouse] = qty
                 except ValueError:
-                    return None  # Invalid number
-            
-            if not sizes:
-                return None  # No sizes found
-            
-            warehouse_data.append((warehouse_name, sizes))
+                    continue
         
-        return warehouse_data if warehouse_data else None
+        return warehouse_summary
         
-    except Exception:
+    except Exception as e:
+        logger.error(f"Error generating warehouse summary: {str(e)}")
+        return {}
+
+
+# Utility functions for data management
+def backup_sheet_data():
+    """Create a backup of current sheet data"""
+    sheets_manager = GoogleSheetsManager.get_instance()
+    try:
+        worksheet = sheets_manager.get_main_worksheet()
+        all_data = worksheet.get_all_values()
+        
+        # Create backup worksheet with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_name = f"Backup_{timestamp}"
+        
+        spreadsheet = sheets_manager.get_spreadsheet()
+        backup_sheet = spreadsheet.add_worksheet(backup_name, len(all_data), len(all_data[0]) if all_data else 10)
+        
+        if all_data:
+            backup_sheet.update(f'A1:{chr(65 + len(all_data[0]) - 1)}{len(all_data)}', all_data)
+        
+        logger.info(f"Created backup sheet: {backup_name}")
+        return backup_name
+        
+    except Exception as e:
+        logger.error(f"Error creating backup: {str(e)}")
         return None
 
-def setup_save_handler(bot: TeleBot):
-    @bot.message_handler(commands=['save'])
-    def start_save_process(message):
-        """Start the product data collection process with single message input"""
-        user_id = message.from_user.id
 
-        # Initialize user data
-        user_data.initialize_user(user_id)
-        user_data.set_current_action(user_id, "saving_new_single")
-        user_data.initialize_form_data(user_id)
-
-        # Send sample format
-        sample_format = (
-            "Заполните все данные одним сообщением в следующем формате:\n\n"
-            "📋 Образец заполнения:\n"
-            "Название изделия:\n"
-            "Цвет изделия:\n"
-            "Количество (шт):\n"
-            "Склады и размеры:\n"
-            "Дата отправки (дд/мм/гггг):\n"
-            "Дата возможного прибытия (дд/мм/гггг):\n\n"
-            "💡 Примеры:\n\n"
-            "🔹 Один склад:\n"
-            "рубашка\n"
-            "красный\n"
-            "100\n"
-            "Казань: S-50 M-25 L-25\n"
-            "12.12.2021\n"
-            "15/12/2021\n\n"
-            "🔹 Несколько складов:\n"
-            "рубашка\n"
-            "синий\n"
-            "200\n"
-            "Казань: S-30 M-40 | Москва: L-50 XL-80\n"
-            "12.12.2021\n"
-            "15/12/2021\n\n"
-            "📝 Формат складов и размеров:\n"
-            "• Один склад: Склад: размер-количество размер-количество\n"
-            "• Несколько складов: Склад1: размеры | Склад2: размеры\n"
-            "• Разделитель складов: | (вертикальная черта)\n"
-            "• Разделитель размеров: - (дефис)\n\n"
-            "Нажмите /cancel для отмены заполнения."
-        )
-        bot.reply_to(message, sample_format)
-
-    @bot.message_handler(func=lambda message:
-        user_data.has_user(message.from_user.id) and
-        user_data.get_current_action(message.from_user.id) == "saving_new_single")
-    def handle_single_save_input(message):
-        """Handle single message input for all form data"""
-        if message.text.startswith('/'):  # Skip if it's a command
-            if message.text == '/cancel':
-                user_data.clear_user_data(message.from_user.id)
-                bot.reply_to(message, "✖️ Процесс заполнения отменен.")
-            return
-
-        user_id = message.from_user.id
+def clear_old_data(days_old=90):
+    """Clear data older than specified days (use with caution)"""
+    sheets_manager = GoogleSheetsManager.get_instance()
+    try:
+        worksheet = sheets_manager.get_main_worksheet()
+        all_data = worksheet.get_all_values()
         
-        try:
-            # Parse the input message
-            lines = [line.strip() for line in message.text.strip().split('\n') if line.strip()]
-            
-            # Check if we have the correct number of lines
-            expected_fields = 6  # Changed from 7 to 6 (removed separate warehouse and size fields)
-            if len(lines) != expected_fields:
-                error_msg = (
-                    f"❌ Неверное количество полей. Ожидается {expected_fields} строк, получено {len(lines)}.\n\n"
-                    "Убедитесь, что вы заполнили все поля в правильном порядке:\n"
-                    "1. Название изделия\n"
-                    "2. Цвет изделия\n"
-                    "3. Количество (шт)\n"
-                    "4. Склады и размеры\n"
-                    "5. Дата отправки\n"
-                    "6. Дата возможного прибытия"
-                )
-                bot.reply_to(message, error_msg)
-                return
-
-            # Extract and validate each field
-            product_name = lines[0]
-            product_color = lines[1]
-            total_amount_str = lines[2]
-            warehouse_sizes_str = lines[3]  # Combined warehouse and sizes
-            shipment_date_str = lines[4]    # Updated index
-            estimated_arrival_str = lines[5]  # Updated index
-
-            errors = []
-
-            # Validate product name
-            if not product_name:
-                errors.append("• Название изделия не может быть пустым")
-
-            # Validate product color
-            if not product_color:
-                errors.append("• Цвет изделия не может быть пустым")
-
-            # Validate total amount
-            if not validate_amount(total_amount_str):
-                errors.append("• Неверное количество. Введите положительное число")
-            else:
-                total_amount = int(total_amount_str)
-
-            # Validate warehouse and sizes format
-            if not validate_warehouse_sizes(warehouse_sizes_str):
-                errors.append("• Неверный формат складов и размеров. Используйте формат 'Склад1: S-50 M-25 | Склад2: L-30'")
-            else:
-                warehouse_data = parse_warehouse_sizes(warehouse_sizes_str)
-                if not warehouse_data:
-                    errors.append("• Ошибка при разборе складов и размеров")
-                else:
-                    # Validate that total amounts match
-                    calculated_total = sum(sum(sizes.values()) for _, sizes in warehouse_data)
-                    if calculated_total != total_amount:
-                        errors.append(f"• Сумма размеров ({calculated_total}) не совпадает с общим количеством ({total_amount})")
-
-            # Validate shipment date
-            if not validate_date(shipment_date_str):
-                errors.append("• Неверный формат даты отправки. Используйте дд/мм/гггг или дд.мм.гггг")
-            else:
-                shipment_date = standardize_date(shipment_date_str)
-
-            # Validate estimated arrival date
-            if not validate_date(estimated_arrival_str):
-                errors.append("• Неверный формат даты прибытия. Используйте дд/мм/гггг или дд.мм.гггг")
-            else:
-                estimated_arrival = standardize_date(estimated_arrival_str)
-
-            # If there are validation errors, send them back
-            if errors:
-                error_message = "❌ Найдены следующие ошибки:\n\n" + "\n".join(errors)
-                error_message += "\n\nПожалуйста, исправьте ошибки и отправьте данные заново."
-                bot.reply_to(message, error_message)
-                return
-
-            # If validation passed, save the data
-            # For multiple warehouses, we'll create multiple records
-            for warehouse_name, sizes in warehouse_data:
-                form_data = {
-                    'product_name': product_name,
-                    'product_color': product_color,
-                    'total_amount': sum(sizes.values()),  # Amount for this warehouse
-                    'warehouse': warehouse_name,
-                    'shipment_date': shipment_date,
-                    'estimated_arrival': estimated_arrival
-                }
-
-                # Add size amounts to form data
-                for size_key, size_value in sizes.items():
-                    form_data[size_key] = size_value
-
-                # Update user data with form data for this warehouse
-                for key, value in form_data.items():
-                    user_data.update_form_data(user_id, key, value)
-
-                # Save to Google Sheets for each warehouse
+        if len(all_data) <= 1:
+            return 0
+        
+        cutoff_date = datetime.now() - timedelta(days=days_old)
+        rows_to_delete = []
+        
+        for i, row in enumerate(all_data[1:], start=2):  # Start from row 2 (skip header)
+            if len(row) >= 1:
                 try:
-                    row_index = save_to_sheets(bot, message)
-                    # Notify admins about the new record
-                    notify_admins_about_new_record(bot, message, row_index)
-                except Exception as e:
-                    logger.error(f"Error saving warehouse {warehouse_name}: {str(e)}")
-                    bot.reply_to(message, f"❌ Ошибка при сохранении данных для склада {warehouse_name}")
-                    user_data.clear_user_data(user_id)
-                    return
-
-            # Show confirmation message with all data
-            warehouse_summary = []
-            for warehouse_name, sizes in warehouse_data:
-                size_str = ", ".join([f"{size}: {qty}" for size, qty in sizes.items()])
-                warehouse_summary.append(f"🏪 {warehouse_name}: {size_str}")
-
-            confirmation_msg = (
-                "✅ Данные успешно сохранены!\n\n"
-                f"📦 Название изделия: {product_name}\n"
-                f"🎨 Цвет изделия: {product_color}\n"
-                f"📊 Общее количество: {total_amount} шт\n"
-                + "\n".join(warehouse_summary) + "\n"
-                f"📅 Дата отправки: {shipment_date}\n"
-                f"📅 Дата прибытия: {estimated_arrival}\n\n"
-                f"Создано записей: {len(warehouse_data)}"
-            )
-            bot.reply_to(message, confirmation_msg)
-
-            # Clear user data
-            user_data.clear_user_data(user_id)
-
-        except Exception as e:
-            logger.error(f"Error in handle_single_save_input: {str(e)}")
-            bot.reply_to(message, "❌ Произошла ошибка при обработке данных. Попробуйте еще раз.")
-            user_data.clear_user_data(user_id)
-
-    # Keep the old step-by-step handler for backward compatibility
-    @bot.message_handler(commands=['save_step'])
-    def start_step_save_process(message):
-        """Start the product data collection process (step-by-step)"""
-        user_id = message.from_user.id
-
-        # Initialize user data
-        user_data.initialize_user(user_id)
-        user_data.set_current_action(user_id, "saving_new")
-        user_data.set_current_step(user_id, 0)
-        user_data.initialize_form_data(user_id)
-
-        # Send initial messages
-        cancel_message = "Заполните все данные по порядку. Нажмите или ведите /cancel для отмены заполнения."
-        bot.reply_to(message, cancel_message)
-        bot.send_message(message.chat.id, PROMPTS[STEPS[0]])
-
-    @bot.message_handler(func=lambda message:
-        user_data.has_user(message.from_user.id) and
-        user_data.get_current_action(message.from_user.id) == "saving_new")
-    def handle_save_input(message):
-        """Handle input for the form when saving new data (step-by-step)"""
-        if message.text.startswith('/'):  # Skip if it's a command
-            if message.text == '/cancel':
-                user_data.clear_user_data(message.from_user.id)
-                bot.reply_to(message, "✖️ Процесс заполнения отменен.")
-            return
-
-        user_id = message.from_user.id
-        current_step = user_data.get_current_step(user_id)
-        step_name = STEPS[current_step]
-        response = message.text.strip()
-
-        # Validate input based on step
-        valid = True
-        error_msg = None
-
-        try:
-            if step_name == "shipment_date" or step_name == "estimated_arrival":
-                if not validate_date(response):
-                    valid = False
-                    error_msg = "Неверный формат даты. Используйте дд/мм/гггг или дд.мм.гггг"
-                else:
-                    response = standardize_date(response)
-
-            elif step_name == "total_amount":
-                if not validate_amount(response):
-                    valid = False
-                    error_msg = "Неверное количество. Введите положительное число."
-                else:
-                    response = int(response)
-
-            elif step_name == "size_amounts":
-                if not validate_size_amounts(response):
-                    valid = False
-                    error_msg = "Неверный формат. Используйте формат 'S: 50 M: 25 L: 50'"
-
-            if valid:
-                # Save response
-                if step_name == "size_amounts":
-                    sizes = parse_size_amounts(response)
-                    for size_key, size_value in sizes.items():
-                        user_data.update_form_data(user_id, size_key, size_value)
-                else:
-                    user_data.update_form_data(user_id, step_name, response)
-
-                # Move to next step or complete
-                next_step = current_step + 1
-
-                if next_step < len(STEPS):
-                    # Move to next step
-                    user_data.set_current_step(user_id, next_step)
-                    next_step_name = STEPS[next_step]
-                    bot.send_message(message.chat.id, PROMPTS[next_step_name])
-                else:
-                    # Complete the process
-                    try:
-                        row_index = save_to_sheets(bot, message)
-                        # After successful save, notify admins about the new record
-                        notify_admins_about_new_record(bot, message, row_index)
-                    except Exception as e:
-                        logger.error(f"Error in save_to_sheets: {str(e)}")
-                        bot.reply_to(message, "❌ Произошла ошибка при сохранении данных. Попробуйте еще раз.")
-                        user_data.clear_user_data(user_id)
-                        return
-            else:
-                # Send error message and repeat the prompt
-                bot.reply_to(message, error_msg)
-                bot.send_message(message.chat.id, PROMPTS[step_name])
-
-        except Exception as e:
-            logger.error(f"Error in handle_save_input: {str(e)}")
-            bot.reply_to(message, "❌ Произошла ошибка при обработке данных. Попробуйте еще раз.")
-            user_data.clear_user_data(user_id)
-
-    def notify_admins_about_new_record(bot, message, row_index):
-        """Notify all admins about a new record being added to Google Sheets"""
-        try:
-            user_id = message.from_user.id
-            username = message.from_user.username or message.from_user.first_name or f"User ID: {user_id}"
-
-            # Get the sheet manager and worksheet
-            sheets_manager = GoogleSheetsManager.get_instance()
-            worksheet = sheets_manager.get_main_worksheet()
-
-            # Get the current record to include in the notification
-            record = worksheet.row_values(row_index)
-
-            # Extract relevant information
-            product_name = record[3] if len(record) > 3 else "Unknown product"
-            product_color = record[7] if len(record) > 7 else "Unknown color"
-            shipment_date = record[4] if len(record) > 4 else "Unknown date"
-            estimated_arrival = record[5] if len(record) > 5 else "Unknown date"
-            total_amount = record[6] if len(record) > 6 else "Unknown amount"
-
-            # Prepare notification text
-            notification_text = (
-                f"🆕 Новая запись добавлена в таблицу\n\n"
-                f"Пользователь: @{username}\n"
-                f"Изделие: {product_name}\n"
-                f"Цвет: {product_color}\n"
-                f"Дата отправки: {shipment_date}\n"
-                f"Примерная дата прибытия: {estimated_arrival}\n"
-                f"Общее количество: {total_amount}\n"
-                f"Дата добавления: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-            )
-
-            # Send notification to each admin
-            for admin_username in ADMIN_USER_USERNAMES:
-                try:
-                    # Get the admin's chat_id from the users worksheet
-                    users_worksheet = sheets_manager.get_users_worksheet()
-                    all_users = users_worksheet.get_all_values()
-
-                    # Find admin's chat_id by username
-                    admin_chat_id = None
-                    for user_row in all_users[1:]:  # Skip header
-                        if len(user_row) > 1 and user_row[1] == admin_username:
-                            admin_chat_id = int(user_row[0])
-                            break
-
-                    if admin_chat_id:
-                        bot.send_message(admin_chat_id, notification_text)
-                        logger.info(f"New record notification sent to admin {admin_username}")
-                    else:
-                        logger.warning(f"Admin {admin_username} not found in users worksheet")
-                except Exception as admin_error:
-                    logger.error(f"Failed to notify admin {admin_username}: {str(admin_error)}")
-        except Exception as e:
-            logger.error(f"Error notifying admins about new record: {str(e)}")
-            # This error shouldn't prevent the user from completing their task
-            # so we just log it and don't send any error message to the user
-
-    @bot.message_handler(commands=['cancel'])
-    def cancel_save_process(message):
-        """Cancel the save process"""
-        user_id = message.from_user.id
-        if user_data.has_user(user_id):
-            user_data.clear_user_data(user_id)
-            bot.reply_to(message, "✖️ Процесс заполнения отменен.")
-        else:
-            bot.reply_to(message, "Нет активного процесса для отмены.")
+                    row_date = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
+                    if row_date < cutoff_date:
+                        rows_to_delete.append(i)
+                except ValueError:
+                    continue
+        
+        # Delete rows in reverse order to maintain indices
+        for row_index in reversed(rows_to_delete):
+            worksheet.delete_rows(row_index)
+        
+        logger.info(f"Deleted {len(rows_to_delete)} old records")
+        return len(rows_to_delete)
+        
+    except Exception as e:
+        logger.error(f"Error clearing old data: {str(e)}")
+        return 0
