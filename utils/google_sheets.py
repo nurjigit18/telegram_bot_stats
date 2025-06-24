@@ -155,31 +155,70 @@ def save_to_sheets(bot, message):
         return
 
     try:
+        # Get the worksheet to check headers
+        worksheet = sheets_manager.get_main_worksheet()
+        
+        # Get or create headers
+        try:
+            headers = worksheet.row_values(1)
+        except:
+            headers = []
+        
+        # Define expected headers
+        expected_headers = [
+            'timestamp', 'user_id', 'username', 'product_name', 'shipment_date', 
+            'estimated_arrival', 'actual_arrival', 'product_color', 'total_amount', 
+            'warehouse', 'XS', 'S', 'M', 'L', 'XL', 'XXL', '2XL', '3XL', '4XL', '5XL'
+        ]
+        
+        # Update headers if needed
+        if not headers or len(headers) < len(expected_headers):
+            worksheet.update('A1', [expected_headers])
+            logger.info("Updated worksheet headers")
+
         # Prepare row data
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # Prepare size data - extract individual size values from form_data
+        size_columns = ['XS', 'S', 'M', 'L', 'XL', 'XXL', '2XL', '3XL', '4XL', '5XL']
+        size_values = []
+        
+        for size in size_columns:
+            size_value = form_data.get(size, 0)  # Default to 0 if size not found
+            size_values.append(size_value if size_value else 0)
+        
+        # Log the sizes being saved for debugging
+        sizes_debug = {size: form_data.get(size, 0) for size in size_columns if form_data.get(size, 0)}
+        logger.info(f"Saving sizes for user {username}: {sizes_debug}")
+        
         row_data = [
             timestamp,
             user_id,
             username,
-            form_data.get("product_name"),
-            form_data.get("shipment_date"),
-            form_data.get("estimated_arrival"),
+            form_data.get("product_name", ""),
+            form_data.get("shipment_date", ""),
+            form_data.get("estimated_arrival", ""),
             "",  # Actual arrival date (empty initially)
-            form_data.get("product_color"),
-            form_data.get("total_amount"),
-            form_data.get("warehouse"),
-            form_data.get("sizes_data")  # All sizes in one column
-        ]
+            form_data.get("product_color", ""),
+            form_data.get("total_amount", ""),
+            form_data.get("warehouse", "")
+        ] + size_values  # Add the size values as separate columns
 
         # Save to Google Sheets
-        sheets_manager.get_main_worksheet().append_row(row_data)
-        logger.info(f"Saved product data from {username} to Google Sheets")
+        row_index = len(worksheet.get_all_values()) + 1
+        worksheet.append_row(row_data)
+        
+        logger.info(f"Saved product data from {username} to Google Sheets at row {row_index}")
+        logger.info(f"Row data: {row_data}")
 
+        # Send success message to user
+        bot.send_message(message.chat.id, "✅ Данные сохранены в Google Таблице!")
 
-        # Clear user data using the UserData class method
-        user_data.clear_user_data(user_id)
+        # Return the row index for admin notifications
+        return row_index
 
     except Exception as e:
         logger.error(f"Error saving to Google Sheets: {str(e)}")
-        bot.send_message(message.chat.id, "❌ Ошибка при сохранении данных. Попробуйте еще раз с помощью /save")
-        user_data.clear_user_data(user_id)  # Clear user data in case of error
+        logger.error(f"Form data was: {form_data}")
+        bot.send_message(message.chat.id, f"❌ Ошибка при сохранении данных: {str(e)}")
+        raise  # Re-raise the exception so the calling function can handle it
