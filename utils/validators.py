@@ -9,14 +9,14 @@ def validate_warehouse_sizes(warehouse_sizes_str):
     
     Valid formats:
     - Single warehouse: "Казань: S-50 M-25 L-25"
-    - Multiple warehouses: "Казань: S-30 M-40 | Москва: L-50 XL-80"
+    - Multiple warehouses: "Казань: S-30 M-40, Москва: L-50 XL-80"
     """
     try:
         if not warehouse_sizes_str or not warehouse_sizes_str.strip():
             return False
         
-        # Split by | for multiple warehouses
-        warehouse_parts = [part.strip() for part in warehouse_sizes_str.split('|')]
+        # Split by comma for multiple warehouses
+        warehouse_parts = [part.strip() for part in warehouse_sizes_str.split(',')]
         
         for warehouse_part in warehouse_parts:
             if ':' not in warehouse_part:
@@ -68,8 +68,8 @@ def parse_warehouse_sizes(warehouse_sizes_str):
     try:
         warehouse_data = []
         
-        # Split by | for multiple warehouses
-        warehouse_parts = [part.strip() for part in warehouse_sizes_str.split('|')]
+        # Split by comma for multiple warehouses
+        warehouse_parts = [part.strip() for part in warehouse_sizes_str.split(',')]
         
         for warehouse_part in warehouse_parts:
             warehouse_name, sizes_str = warehouse_part.split(':', 1)

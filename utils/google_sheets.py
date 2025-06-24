@@ -79,16 +79,6 @@ class GoogleSheetsManager:
             self.connect()
         return self.users_worksheet
 
-    def get_main_worksheet(self):
-        if self.main_worksheet is None:
-            self.connect()
-        return self.main_worksheet
-
-    def get_users_worksheet(self):
-        if self.users_worksheet is None:
-            self.connect()
-        return self.users_worksheet
-
 def connect_to_google_sheets():
     # Define the scope
     scope = [
@@ -155,32 +145,35 @@ def save_to_sheets(bot, message):
         return
 
     try:
-        # Get the worksheet to check headers
+        # Get the worksheet
         worksheet = sheets_manager.get_main_worksheet()
         
-        # Get or create headers
-        try:
-            headers = worksheet.row_values(1)
-        except:
-            headers = []
-        
-        # Define expected headers
+        # Define expected headers - make sure they match your sheet structure
         expected_headers = [
             'timestamp', 'user_id', 'username', 'product_name', 'shipment_date', 
             'estimated_arrival', 'actual_arrival', 'product_color', 'total_amount', 
-            'warehouse', 'XS', 'S', 'M', 'L', 'XL', 'XXL', '2XL', '3XL', '4XL', '5XL'
+            'warehouse', 'XS', 'S', 'M', 'L', 'XL', 'XXL', '2XL', '3XL', '4XL', '5XL', '6XL', '7XL'
         ]
         
-        # Update headers if needed
-        if not headers or len(headers) < len(expected_headers):
+        # Check if headers exist in row 1
+        try:
+            current_headers = worksheet.row_values(1)
+            logger.info(f"Current headers: {current_headers}")
+        except:
+            current_headers = []
+        
+        # Only update headers if they don't exist or are incomplete
+        if not current_headers or len(current_headers) < len(expected_headers):
+            # Clear the first row completely and set new headers
+            worksheet.clear()
             worksheet.update('A1', [expected_headers])
             logger.info("Updated worksheet headers")
-
-        # Prepare row data
+        
+        # Prepare timestamp
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         # Prepare size data - extract individual size values from form_data
-        size_columns = ['XS', 'S', 'M', 'L', 'XL', 'XXL', '2XL', '3XL', '4XL', '5XL']
+        size_columns = ['XS', 'S', 'M', 'L', 'XL', 'XXL', '2XL', '3XL', '4XL', '5XL', '6XL', '7XL']
         size_values = []
         
         for size in size_columns:
@@ -191,6 +184,7 @@ def save_to_sheets(bot, message):
         sizes_debug = {size: form_data.get(size, 0) for size in size_columns if form_data.get(size, 0)}
         logger.info(f"Saving sizes for user {username}: {sizes_debug}")
         
+        # Prepare row data - make sure it matches the expected headers exactly
         row_data = [
             timestamp,
             user_id,
@@ -204,18 +198,23 @@ def save_to_sheets(bot, message):
             form_data.get("warehouse", "")
         ] + size_values  # Add the size values as separate columns
 
-        # Save to Google Sheets
-        row_index = len(worksheet.get_all_values()) + 1
-        worksheet.append_row(row_data)
+        # Get the next available row
+        all_values = worksheet.get_all_values()
+        next_row = len(all_values) + 1
         
-        logger.info(f"Saved product data from {username} to Google Sheets at row {row_index}")
+        # Use update instead of append_row to ensure data goes to the correct position
+        range_name = f'A{next_row}:{chr(ord("A") + len(row_data) - 1)}{next_row}'
+        worksheet.update(range_name, [row_data])
+        
+        logger.info(f"Saved product data from {username} to Google Sheets at row {next_row}")
         logger.info(f"Row data: {row_data}")
+        logger.info(f"Range used: {range_name}")
 
         # Send success message to user
         bot.send_message(message.chat.id, "✅ Данные сохранены в Google Таблице!")
 
         # Return the row index for admin notifications
-        return row_index
+        return next_row
 
     except Exception as e:
         logger.error(f"Error saving to Google Sheets: {str(e)}")
