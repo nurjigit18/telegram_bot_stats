@@ -10,6 +10,7 @@ def validate_warehouse_sizes(warehouse_sizes_str):
     Valid formats:
     - Single warehouse: "Казань: S-50 M-25 L-25"
     - Multiple warehouses: "Казань: S-30 M-40, Москва: L-50 XL-80"
+    - Extended sizes: "Казань: 4XL-30 5XL-40 6XL-20"
     """
     try:
         if not warehouse_sizes_str or not warehouse_sizes_str.strip():
@@ -42,8 +43,9 @@ def validate_warehouse_sizes(warehouse_sizes_str):
                 size = size.strip()
                 quantity_str = quantity_str.strip()
                 
-                # Validate size (should be letters)
-                if not size or not size.isalpha():
+                # Validate size format - Updated to allow numeric prefixes
+                # Valid sizes: S, M, L, XL, XXL, XXXL, 2XL, 3XL, 4XL, 5XL, 6XL, 7XL, etc.
+                if not size or not re.match(r'^\d*[XSML]+$', size.upper()):
                     return False
                 
                 # Validate quantity (should be positive integer)
@@ -159,3 +161,34 @@ def standardize_date(date_str):
             continue
     
     return date_str  # Return original if can't parse
+
+# Test function to verify the fix
+def test_size_validation():
+    """Test the size validation with various formats"""
+    test_cases = [
+        # Valid cases
+        ("Казань: S-50 M-25 L-25", True),
+        ("Казань: S-30 M-40 , Москва: L-50 XL-80", True),
+        ("Казань: 4XL-30 5XL-40 6XL-20", True),
+        ("Казань: S-30 M-40 6XL-20 , Москва: L-50 XL-80 7XL-50", True),
+        ("Москва: XL-100 2XL-50 3XL-25", True),
+        ("Тест: XXL-25 XXXL-15", True),
+        
+        # Invalid cases
+        ("", False),
+        ("Казань S-50", False),
+        ("Казань: ", False),
+        ("Казань: S50", False),
+        ("Казань: S-", False),
+        ("Казань: -50", False),
+        ("Казань: ABC-50", False),
+    ]
+    
+    print("Testing warehouse sizes validation:")
+    for test_input, expected in test_cases:
+        result = validate_warehouse_sizes(test_input)
+        status = "✓" if result == expected else "✗"
+        print(f"{status} '{test_input}' -> {result} (expected {expected})")
+
+if __name__ == "__main__":
+    test_size_validation()
