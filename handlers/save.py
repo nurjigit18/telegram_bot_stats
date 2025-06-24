@@ -17,15 +17,15 @@ def parse_warehouse_sizes(warehouse_sizes_str):
     
     Formats supported:
     - Single warehouse: "Казань: S-50 M-25 L-25"
-    - Multiple warehouses: "Казань: S-30 M-40 | Москва: L-50 XL-80"
+    - Multiple warehouses: "Казань: S-30 M-40 , Москва: L-50 XL-80"
     
     Returns: List of tuples [(warehouse_name, {size: quantity})]
     """
     try:
         warehouse_data = []
         
-        # Split by | for multiple warehouses
-        warehouse_parts = [part.strip() for part in warehouse_sizes_str.split('|')]
+        # Split by , for multiple warehouses
+        warehouse_parts = [part.strip() for part in warehouse_sizes_str.split(',')]
         
         for warehouse_part in warehouse_parts:
             if ':' not in warehouse_part:
@@ -97,13 +97,13 @@ def setup_save_handler(bot: TeleBot):
             "рубашка\n"
             "синий\n"
             "200\n"
-            "Казань: S-30 M-40 | Москва: L-50 XL-80\n"
+            "Казань: S-30 M-40 , Москва: L-50 XL-80\n"
             "12.12.2021\n"
             "15/12/2021\n\n"
             "📝 Формат складов и размеров:\n"
             "• Один склад: Склад: размер-количество размер-количество\n"
-            "• Несколько складов: Склад1: размеры | Склад2: размеры\n"
-            "• Разделитель складов: | (вертикальная черта)\n"
+            "• Несколько складов: Склад1: размеры , Склад2: размеры\n"
+            "• Разделитель складов: , (вертикальная черта)\n"
             "• Разделитель размеров: - (дефис)\n\n"
             "Нажмите /cancel для отмены заполнения."
         )
@@ -168,7 +168,7 @@ def setup_save_handler(bot: TeleBot):
 
             # Validate warehouse and sizes format
             if not validate_warehouse_sizes(warehouse_sizes_str):
-                errors.append("• Неверный формат складов и размеров. Используйте формат 'Склад1: S-50 M-25 | Склад2: L-30'")
+                errors.append("• Неверный формат складов и размеров. Используйте формат 'Склад1: S-50 M-25 , Склад2: L-30'")
             else:
                 warehouse_data = parse_warehouse_sizes(warehouse_sizes_str)
                 if not warehouse_data:
