@@ -200,38 +200,45 @@ def setup_save_handler(bot: TeleBot):
 
             # If validation passed, save the data
             # For multiple warehouses, we'll create multiple records
+            saved_records = 0
+            warehouse_records = []  # Keep track of what was saved for confirmation
+            
             for warehouse_name, sizes in warehouse_data:
-                form_data = {
-                    'product_name': product_name,
-                    'product_color': product_color,
-                    'total_amount': sum(sizes.values()),  # Amount for this warehouse
-                    'warehouse': warehouse_name,
-                    'shipment_date': shipment_date,
-                    'estimated_arrival': estimated_arrival
-                }
+                # Clear previous form data to avoid contamination between warehouses
+                user_data.initialize_form_data(user_id)
+                
+                # Set the basic form data for this specific warehouse
+                user_data.update_form_data(user_id, 'product_name', product_name)
+                user_data.update_form_data(user_id, 'product_color', product_color)
+                user_data.update_form_data(user_id, 'total_amount', sum(sizes.values()))  # Amount for this warehouse only
+                user_data.update_form_data(user_id, 'warehouse', warehouse_name)
+                user_data.update_form_data(user_id, 'shipment_date', shipment_date)
+                user_data.update_form_data(user_id, 'estimated_arrival', estimated_arrival)
 
-                # Add size amounts to form data
+                # Add size amounts to form data for this specific warehouse
                 for size_key, size_value in sizes.items():
-                    form_data[size_key] = size_value
+                    user_data.update_form_data(user_id, size_key, size_value)
 
-                # Update user data with form data for this warehouse
-                for key, value in form_data.items():
-                    user_data.update_form_data(user_id, key, value)
-
-                # Save to Google Sheets for each warehouse
+                # Save to Google Sheets for this warehouse
                 try:
                     row_index = save_to_sheets(bot, message)
+                    saved_records += 1
+                    warehouse_records.append((warehouse_name, sizes))
+                    
                     # Notify admins about the new record
                     notify_admins_about_new_record(bot, message, row_index)
+                    
+                    logger.info(f"Successfully saved record for warehouse {warehouse_name} with sizes: {sizes}")
+                    
                 except Exception as e:
                     logger.error(f"Error saving warehouse {warehouse_name}: {str(e)}")
-                    bot.reply_to(message, f"❌ Ошибка при сохранении данных для склада {warehouse_name}")
+                    bot.reply_to(message, f"❌ Ошибка при сохранении данных для склада {warehouse_name}: {str(e)}")
                     user_data.clear_user_data(user_id)
                     return
 
-            # Show confirmation message with all data
+            # Show confirmation message with all saved data
             warehouse_summary = []
-            for warehouse_name, sizes in warehouse_data:
+            for warehouse_name, sizes in warehouse_records:
                 size_str = ", ".join([f"{size}: {qty}" for size, qty in sizes.items()])
                 warehouse_summary.append(f"🏪 {warehouse_name}: {size_str}")
 
@@ -243,19 +250,20 @@ def setup_save_handler(bot: TeleBot):
                 + "\n".join(warehouse_summary) + "\n"
                 f"📅 Дата отправки: {shipment_date}\n"
                 f"📅 Дата прибытия: {estimated_arrival}\n\n"
-                f"Создано записей: {len(warehouse_data)}"
+                f"Создано записей: {saved_records}"
             )
             bot.reply_to(message, confirmation_msg)
 
-            # Clear user data
+            # Clear user data after successful completion
             user_data.clear_user_data(user_id)
 
         except Exception as e:
             logger.error(f"Error in handle_single_save_input: {str(e)}")
-            bot.reply_to(message, "❌ Произошла ошибка при обработке данных. Попробуйте еще раз.")
+            bot.reply_to(message, f"❌ Произошла ошибка при обработке данных: {str(e)}. Попробуйте еще раз.")
             user_data.clear_user_data(user_id)
 
-    # Keep the old step-by-step handler for backward compatibility
+
+   # Keep the old step-by-step handler for backward compatibility
     @bot.message_handler(commands=['save_step'])
     def start_step_save_process(message):
         """Start the product data collection process (step-by-step)"""
@@ -407,6 +415,7 @@ def setup_save_handler(bot: TeleBot):
             logger.error(f"Error notifying admins about new record: {str(e)}")
             # This error shouldn't prevent the user from completing their task
             # so we just log it and don't send any error message to the user
+
 
     @bot.message_handler(commands=['cancel'])
     def cancel_save_process(message):
