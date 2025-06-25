@@ -361,42 +361,95 @@ def setup_edit_handler(bot: TeleBot):
 
             # Create markup for editable fields
             markup = InlineKeyboardMarkup()
+            
+            # Define all editable fields with their column indices
+            # Adjust these column indices based on your actual Google Sheets structure
             fields = [
+                ("Название изделия", "product_name", 3),
+                ("Цвет", "product_color", 7),
+                ("Дата отправки", "shipment_date", 4),
+                ("Ожидаемая дата прибытия", "estimated_arrival", 5),
                 ("Фактическая дата прибытия", "actual_arrival", 6),
+                ("Общее количество", "total_amount", 8),
+                ("Склад", "warehouse", 9),
+                ("Размеры", "sizes", 10),  # This will use the new size format
             ]
 
             for field_name, field_id, col_index in fields:
-                current_value = record[col_index] if len(record) > col_index else "Не указано"
-                button_text = f"Изменить {field_name} ({current_value})"
+                # Get current value, handling potential missing data
+                if col_index < len(record) and record[col_index]:
+                    current_value = record[col_index]
+                else:
+                    current_value = "Не указано"
+                
+                # For sizes, show a more readable format
+                if field_id == "sizes":
+                    # Get all size columns and create a readable display
+                    size_columns = get_size_column_mapping()
+                    size_display = []
+                    for size, col_num in size_columns.items():
+                        if col_num < len(record) and record[col_num] and int(record[col_num] or 0) > 0:
+                            size_display.append(f"{size}-{record[col_num]}")
+                    
+                    if size_display:
+                        current_value = ", ".join(size_display)
+                    else:
+                        current_value = "Не указано"
+                
+                # Truncate long values for button display
+                display_value = current_value
+                if len(display_value) > 20:
+                    display_value = display_value[:17] + "..."
+                
+                button_text = f"📝 {field_name}"
+                if current_value != "Не указано":
+                    button_text += f" ({display_value})"
+                
                 logger.info(f"Creating callback data: row_index={row_index}, field_id={field_id}, col_index={col_index}")
                 markup.add(InlineKeyboardButton(
                     button_text,
                     callback_data=f"field_edit_{row_index}_{field_id}_{col_index}"
                 ))
 
-            # Add buttons: Done, Back, and Cancel
+            # Add navigation buttons
             markup.add(InlineKeyboardButton("✅ Готово", callback_data="edit_done"))
-            markup.add(InlineKeyboardButton("⬅️ Назад", callback_data="back_to_record_selection"))
+            markup.add(InlineKeyboardButton("⬅️ Назад к списку", callback_data="back_to_record_selection"))
             markup.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel_edit_operation"))
 
+            # Create a comprehensive display of current values
+            # Get size information for display
+            size_columns = get_size_column_mapping()
+            size_info = []
+            total_sizes = 0
+            for size, col_num in size_columns.items():
+                if col_num < len(record) and record[col_num]:
+                    amount = int(record[col_num] or 0)
+                    if amount > 0:
+                        size_info.append(f"{size}: {amount}")
+                        total_sizes += amount
+            
+            size_display = ", ".join(size_info) if size_info else "Не указано"
+
             current_values = (
-                f"📝 Текущие значения:\n\n"
-                f"Изделие: {record[3]}\n"
-                f"Цвет: {record[7]}\n"
-                f"Дата отправки: {record[4]}\n"
-                f"Ожидаемая дата прибытия: {record[5]}\n"
-                f"Фактическая дата прибытия: {record[6] or 'Не указано'}\n"
-                f"Склад: {record[9]}\n"
-                f"Общее количество: {record[8]}\n"
-                f"Размеры: {record[10]}\n"
-                f"\n\nВыберите поле для редактирования:"
+                f"📋 **Редактирование записи**\n\n"
+                f"🏷️ **Изделие:** {record[3] if len(record) > 3 else 'Не указано'}\n"
+                f"🎨 **Цвет:** {record[7] if len(record) > 7 else 'Не указано'}\n"
+                f"📦 **Склад:** {record[9] if len(record) > 9 else 'Не указано'}\n\n"
+                f"📅 **Дата отправки:** {record[4] if len(record) > 4 else 'Не указано'}\n"
+                f"📅 **Ожидаемая дата прибытия:** {record[5] if len(record) > 5 else 'Не указано'}\n"
+                f"📅 **Фактическая дата прибытия:** {record[6] if len(record) > 6 and record[6] else 'Не указано'}\n\n"
+                f"📊 **Общее количество:** {record[8] if len(record) > 8 else 'Не указано'}\n"
+                f"📏 **Размеры:** {size_display}\n"
+                f"📈 **Всего по размерам:** {total_sizes}\n\n"
+                f"👆 **Выберите поле для редактирования:**"
             )
 
             bot.edit_message_text(
                 current_values,
                 call.message.chat.id,
                 call.message.message_id,
-                reply_markup=markup
+                reply_markup=markup,
+                parse_mode='Markdown'
             )
 
         except Exception as e:
@@ -407,63 +460,169 @@ def setup_edit_handler(bot: TeleBot):
                 call.message.message_id
             )
 
+# REPLACE the existing handle_edit_selection function with this enhanced version:
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("edit_record_"))
+    def handle_edit_selection(call):
+        try:
+            bot.answer_callback_query(call.id)
+            parts = call.data.split("_")
+            row_index = int(parts[2])
+
+            # Get the current record data
+            sheets_manager = GoogleSheetsManager.get_instance()
+            record = sheets_manager.get_main_worksheet().row_values(row_index)
+
+            # Create markup for editable fields
+            markup = InlineKeyboardMarkup()
+            
+            # Define all editable fields with their column indices
+            # Adjust these column indices based on your actual Google Sheets structure
+            fields = [
+                ("Название изделия", "product_name", 3),
+                ("Цвет", "product_color", 7),
+                ("Дата отправки", "shipment_date", 4),
+                ("Ожидаемая дата прибытия", "estimated_arrival", 5),
+                ("Фактическая дата прибытия", "actual_arrival", 6),
+                ("Общее количество", "total_amount", 8),
+                ("Склад", "warehouse", 9),
+                ("Размеры", "sizes", 10),  # This will use the new size format
+            ]
+
+            for field_name, field_id, col_index in fields:
+                # Get current value, handling potential missing data
+                if col_index < len(record) and record[col_index]:
+                    current_value = record[col_index]
+                else:
+                    current_value = "Не указано"
+                
+                # For sizes, show a more readable format
+                if field_id == "sizes":
+                    # Get all size columns and create a readable display
+                    size_columns = get_size_column_mapping()
+                    size_display = []
+                    for size, col_num in size_columns.items():
+                        if col_num < len(record) and record[col_num] and int(record[col_num] or 0) > 0:
+                            size_display.append(f"{size}-{record[col_num]}")
+                    
+                    if size_display:
+                        current_value = ", ".join(size_display)
+                    else:
+                        current_value = "Не указано"
+                
+                # Truncate long values for button display
+                display_value = current_value
+                if len(display_value) > 20:
+                    display_value = display_value[:17] + "..."
+                
+                button_text = f"📝 {field_name}"
+                if current_value != "Не указано":
+                    button_text += f" ({display_value})"
+                
+                logger.info(f"Creating callback data: row_index={row_index}, field_id={field_id}, col_index={col_index}")
+                markup.add(InlineKeyboardButton(
+                    button_text,
+                    callback_data=f"field_edit_{row_index}_{field_id}_{col_index}"
+                ))
+
+            # Add navigation buttons
+            markup.add(InlineKeyboardButton("✅ Готово", callback_data="edit_done"))
+            markup.add(InlineKeyboardButton("⬅️ Назад к списку", callback_data="back_to_record_selection"))
+            markup.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel_edit_operation"))
+
+            # Create a comprehensive display of current values
+            # Get size information for display
+            size_columns = get_size_column_mapping()
+            size_info = []
+            total_sizes = 0
+            for size, col_num in size_columns.items():
+                if col_num < len(record) and record[col_num]:
+                    amount = int(record[col_num] or 0)
+                    if amount > 0:
+                        size_info.append(f"{size}: {amount}")
+                        total_sizes += amount
+            
+            size_display = ", ".join(size_info) if size_info else "Не указано"
+
+            current_values = (
+                f"📋 **Редактирование записи**\n\n"
+                f"🏷️ **Изделие:** {record[3] if len(record) > 3 else 'Не указано'}\n"
+                f"🎨 **Цвет:** {record[7] if len(record) > 7 else 'Не указано'}\n"
+                f"📦 **Склад:** {record[9] if len(record) > 9 else 'Не указано'}\n\n"
+                f"📅 **Дата отправки:** {record[4] if len(record) > 4 else 'Не указано'}\n"
+                f"📅 **Ожидаемая дата прибытия:** {record[5] if len(record) > 5 else 'Не указано'}\n"
+                f"📅 **Фактическая дата прибытия:** {record[6] if len(record) > 6 and record[6] else 'Не указано'}\n\n"
+                f"📊 **Общее количество:** {record[8] if len(record) > 8 else 'Не указано'}\n"
+                f"📏 **Размеры:** {size_display}\n"
+                f"📈 **Всего по размерам:** {total_sizes}\n\n"
+                f"👆 **Выберите поле для редактирования:**"
+            )
+
+            bot.edit_message_text(
+                current_values,
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=markup,
+                parse_mode='Markdown'
+            )
+
+        except Exception as e:
+            logger.error(f"Error handling edit selection: {str(e)}")
+            bot.edit_message_text(
+                "❌ Ошибка при получении информации о записи.",
+                call.message.chat.id,
+                call.message.message_id
+            )
+
+# ALSO UPDATE the handle_edit_field_selection function to handle the new fields:
+
     @bot.callback_query_handler(func=lambda call: call.data.startswith("field_edit_"))
     def handle_edit_field_selection(call):
         try:
             bot.answer_callback_query(call.id)
 
-            # Parse the callback data correctly
+            # Parse the callback data
             parts = call.data.split("_")
-
-            # Debug logging to understand the actual format
             logger.info(f"Parsing callback data: {call.data}, parts: {parts}")
-
-            # The expected format is "field_edit_2_product_name_3"
-            # So parts would be ["field", "edit", "2", "product", "name", "3"] for product_name
-            # Or ["field", "edit", "2", "warehouse", "9"] for warehouse
 
             # Extract row index (always at position 2)
             row_index = int(parts[2])
 
-            # For fields with underscores in their names (like product_name),
-            # we need to reconstruct the field_id
-            if len(parts) > 5:  # If there are more parts, it might be a field with underscore
-                if parts[3] == "product" and parts[4] == "name":
-                    field_id = "product_name"
-                    col_index = int(parts[5])
-                elif parts[3] == "product" and parts[4] == "color":
-                    field_id = "product_color"
-                    col_index = int(parts[5])
-                elif parts[3] == "shipment" and parts[4] == "date":
-                    field_id = "shipment_date"
-                    col_index = int(parts[5])
-                elif parts[3] == "estimated" and parts[4] == "arrival":
-                    field_id = "estimated_arrival"
-                    col_index = int(parts[5])
-                elif parts[3] == "actual" and parts[4] == "arrival":
-                    field_id = "actual_arrival"
-                    col_index = int(parts[5])
-                elif parts[3] == "total" and parts[4] == "amount":
-                    field_id = "total_amount"
-                    col_index = int(parts[5])
-                elif parts[3] == "s" and parts[4] == "amount":
-                    field_id = "s_amount"
-                    col_index = int(parts[5])
-                elif parts[3] == "m" and parts[4] == "amount":
-                    field_id = "m_amount"
-                    col_index = int(parts[5])
-                elif parts[3] == "l" and parts[4] == "amount":
-                    field_id = "l_amount"
-                    col_index = int(parts[5])
-                else:
-                    # If we don't recognize the pattern, log error and return
-                    logger.error(f"Unrecognized field pattern in callback data: {call.data}")
-                    bot.send_message(call.message.chat.id, "❌ Ошибка формата данных.")
-                    return
-            else:
-                # Simple field like "warehouse"
+            # Handle different field types
+            if len(parts) >= 5:
                 field_id = parts[3]
-                col_index = int(parts[4])
+                if field_id in ["product", "shipment", "estimated", "actual", "total"]:
+                    # Handle compound field names
+                    if parts[3] == "product" and len(parts) > 4:
+                        if parts[4] == "name":
+                            field_id = "product_name"
+                            col_index = int(parts[5])
+                        elif parts[4] == "color":
+                            field_id = "product_color"
+                            col_index = int(parts[5])
+                    elif parts[3] == "shipment" and parts[4] == "date":
+                        field_id = "shipment_date"
+                        col_index = int(parts[5])
+                    elif parts[3] == "estimated" and parts[4] == "arrival":
+                        field_id = "estimated_arrival"
+                        col_index = int(parts[5])
+                    elif parts[3] == "actual" and parts[4] == "arrival":
+                        field_id = "actual_arrival"
+                        col_index = int(parts[5])
+                    elif parts[3] == "total" and parts[4] == "amount":
+                        field_id = "total_amount"
+                        col_index = int(parts[5])
+                    else:
+                        logger.error(f"Unrecognized compound field pattern: {call.data}")
+                        bot.send_message(call.message.chat.id, "❌ Ошибка формата данных.")
+                        return
+                else:
+                    # Simple field names
+                    col_index = int(parts[4])
+            else:
+                logger.error(f"Invalid callback data format: {call.data}")
+                bot.send_message(call.message.chat.id, "❌ Ошибка формата данных.")
+                return
 
             # Store editing state in user_data
             user_id = call.from_user.id
@@ -472,37 +631,55 @@ def setup_edit_handler(bot: TeleBot):
             user_data.update_user_data(user_id, "editing_field", field_id)
             user_data.update_user_data(user_id, "editing_col", col_index)
 
-            field_names = {
-                "product_name": "название изделия",
-                "product_color": "цвет",
-                "shipment_date": "дату отправки",
-                "estimated_arrival": "ожидаемую дату прибытия",
-                "actual_arrival": "фактическую дату прибытия",
-                "warehouse": "склад",
-                "total_amount": "общее количество",
-                "s_amount": "количество размера S",
-                "m_amount": "количество размера M",
-                "l_amount": "количество размера L"
+            # Define field-specific prompts and examples
+            field_prompts = {
+                "product_name": ("название изделия", "например: Футболка базовая"),
+                "product_color": ("цвет", "например: Красный, Синий, Черный"),
+                "shipment_date": ("дату отправки", "формат: ДД/ММ/ГГГГ, например: 15/12/2024"),
+                "estimated_arrival": ("ожидаемую дату прибытия", "формат: ДД/ММ/ГГГГ, например: 20/12/2024"),
+                "actual_arrival": ("фактическую дату прибытия", "формат: ДД/ММ/ГГГГ, например: 18/12/2024"),
+                "warehouse": ("склад", "например: Склад А, Основной склад"),
+                "total_amount": ("общее количество", "например: 100"),
+                "sizes": ("размеры", "формат: S-10, XL-20, 7XL-30")
             }
 
-            # Get the current value from Google Sheets
+            field_name, example = field_prompts.get(field_id, ("значение", ""))
+
+            # Get current value from Google Sheets
             sheets_manager = GoogleSheetsManager.get_instance()
             try:
-                current_value = sheets_manager.get_main_worksheet().cell(row_index, col_index+1).value
+                if field_id == "sizes":
+                    # For sizes, show current distribution
+                    size_columns = get_size_column_mapping()
+                    current_sizes = []
+                    record = sheets_manager.get_main_worksheet().row_values(row_index)
+                    for size, col_num in size_columns.items():
+                        if col_num < len(record) and record[col_num] and int(record[col_num] or 0) > 0:
+                            current_sizes.append(f"{size}-{record[col_num]}")
+                    current_value = ", ".join(current_sizes) if current_sizes else "Не указано"
+                else:
+                    current_value = sheets_manager.get_main_worksheet().cell(row_index, col_index).value
+                    if not current_value:
+                        current_value = "Не указано"
             except Exception as e:
                 logger.error(f"Error getting current value: {str(e)}")
                 current_value = "Не указано"
-            if current_value == None:
-                current_value = "Не указано"
-            prompt = f"Введите новое {field_names.get(field_id, 'значение (ДД/ММ/ГГГГ)')} (ДД/ММ/ГГГГ):\n(Текущее значение: {current_value})"
-            msg = bot.send_message(
-                call.message.chat.id,
-                prompt,
-                reply_markup=ForceReply()
+
+            prompt = (
+                f"✏️ **Редактирование поля**\n\n"
+                f"Введите новое **{field_name}**:\n"
+                f"({example})\n\n"
+                f"📝 Текущее значение: `{current_value}`"
             )
 
-            # Log success for debugging
-            logger.info(f"Edit field prompt sent successfully for field {field_id}, row {row_index}, col {col_index}")
+            bot.send_message(
+                call.message.chat.id,
+                prompt,
+                reply_markup=ForceReply(),
+                parse_mode='Markdown'
+            )
+
+            logger.info(f"Edit field prompt sent for field {field_id}, row {row_index}, col {col_index}")
 
         except Exception as e:
             logger.error(f"Error handling edit field selection: {str(e)}")
@@ -510,6 +687,9 @@ def setup_edit_handler(bot: TeleBot):
                 call.message.chat.id,
                 f"❌ Ошибка при выборе поля для редактирования: {str(e)}"
             )
+
+
+# REPLACE the existing handle_edit_field_input function with this enhanced version:
 
     @bot.message_handler(func=lambda message: user_data.has_user(message.from_user.id) and
                     user_data.get_user_data(message.from_user.id).get("editing_row"))
@@ -527,54 +707,127 @@ def setup_edit_handler(bot: TeleBot):
             field_id = user_data_dict.get("editing_field")
             new_value = message.text.strip()
 
-            # Apply specific validation based on field type
-            if field_id in ["shipment_date", "estimated_arrival", "actual_arrival"]:
+            sheets_manager = GoogleSheetsManager.get_instance()
+            worksheet = sheets_manager.get_main_worksheet()
+
+            # Handle different field types with specific validation
+            if field_id == "sizes":
+                # Handle the new size format
+                if not validate_new_size_format(new_value):
+                    bot.reply_to(message, "❌ Некорректный формат размеров. Используйте формат: S-10, XL-20, 7XL-30")
+                    return
+
+                # Parse the new size format
+                sizes = parse_new_size_format(new_value)
+                if not sizes:
+                    bot.reply_to(message, "❌ Ошибка при обработке размеров. Проверьте формат ввода.")
+                    return
+
+                # Get size to column mapping
+                size_columns = get_size_column_mapping()
+                
+                # Clear all existing size columns for this row
+                for size, col_num in size_columns.items():
+                    worksheet.update_cell(row_index, col_num, "0")
+                
+                # Update with new values
+                updated_sizes = []
+                total_amount = 0
+                for size, amount in sizes.items():
+                    if size in size_columns:
+                        col_num = size_columns[size]
+                        worksheet.update_cell(row_index, col_num, str(amount))
+                        updated_sizes.append(f"{size}: {amount}")
+                        total_amount += amount
+                    else:
+                        bot.reply_to(message, f"⚠️ Размер '{size}' не найден в системе. Доступные размеры: {', '.join(size_columns.keys())}")
+                        return
+
+                # Update total amount in column 8 (if that's where total is stored)
+                worksheet.update_cell(row_index, 8, str(total_amount))
+                
+                success_message = f"✅ Размеры успешно обновлены!\n📏 Обновленные размеры: {', '.join(updated_sizes)}\n📊 Общее количество: {total_amount}"
+                
+            elif field_id in ["shipment_date", "estimated_arrival", "actual_arrival"]:
                 # Validate date format
                 if not validate_date(new_value):
-                    bot.reply_to(message, "❌ Некорректный формат даты. Используйте дд/мм/гггг.")
+                    bot.reply_to(message, "❌ Некорректный формат даты. Используйте дд/мм/гггг (например: 15/12/2024).")
                     return
                 new_value = standardize_date(new_value)
-            elif field_id in ["total_amount", "s_amount", "m_amount", "l_amount"]:
+                worksheet.update_cell(row_index, col_index, new_value)
+                success_message = f"✅ Дата успешно обновлена: {new_value}"
+                
+            elif field_id == "total_amount":
                 # Validate numeric values
                 if not validate_amount(new_value):
                     bot.reply_to(message, "❌ Некорректное количество. Введите целое число.")
                     return
-                # Ensure it's stored as a string
                 new_value = str(int(new_value))
-            #PRODUCT NAME AND COLOR VALIDATION
+                worksheet.update_cell(row_index, col_index, new_value)
+                success_message = f"✅ Количество успешно обновлено: {new_value}"
+                
             elif field_id in ["product_name", "product_color", "warehouse"]:
-                new_value = str(new_value)
+                # Text fields - basic validation
+                if not new_value or len(new_value.strip()) == 0:
+                    bot.reply_to(message, "❌ Значение не может быть пустым.")
+                    return
+                
+                # Limit length to prevent issues
+                if len(new_value) > 100:
+                    bot.reply_to(message, "❌ Значение слишком длинное (максимум 100 символов).")
+                    return
+                    
+                worksheet.update_cell(row_index, col_index, new_value)
+                field_names = {
+                    "product_name": "Название изделия", 
+                    "product_color": "Цвет",
+                    "warehouse": "Склад"
+                }
+                success_message = f"✅ {field_names[field_id]} успешно обновлено: {new_value}"
+                
+            else:
+                # Generic field update
+                worksheet.update_cell(row_index, col_index, new_value)
+                success_message = f"✅ Значение успешно обновлено: {new_value}"
 
             # Log for debugging
-            logger.info(f"Updating cell at row {row_index}, col {col_index} with value '{new_value}'")
-
-            # Update the value in Google Sheets
-            sheets_manager = GoogleSheetsManager.get_instance()
-            sheets_manager.get_main_worksheet().update_cell(row_index, int(col_index)+1, new_value)
+            logger.info(f"Updated field {field_id} at row {row_index}, col {col_index} with value '{new_value}'")
 
             # Don't clear editing state yet, keep user_records for potential back navigation
             user_data.update_user_data(user_id, "editing_field", None)
             user_data.update_user_data(user_id, "editing_col", None)
 
-            # Show success message and updated record
-            bot.reply_to(message, "✅ Значение успешно обновлено!")
+            # Show success message
+            bot.reply_to(message, success_message)
 
-            # Retrieve the updated record
+            # Retrieve and show the updated record
             try:
-                record = sheets_manager.get_main_worksheet().row_values(row_index)
+                record = worksheet.row_values(row_index)
 
-                # Make sure we handle potential missing values
+                # Get updated size information
+                size_columns = get_size_column_mapping()
+                size_info = []
+                total_sizes = 0
+                for size, col_num in size_columns.items():
+                    if col_num < len(record) and record[col_num]:
+                        amount = int(record[col_num] or 0)
+                        if amount > 0:
+                            size_info.append(f"{size}: {amount}")
+                            total_sizes += amount
+                
+                size_display = ", ".join(size_info) if size_info else "Не указано"
+
                 updated_values = (
-                    f"📝 Обновленные значения:\n\n"
-                    f"Изделие: {record[3] if len(record) > 3 else 'Не указано'}\n"
-                    f"Цвет: {record[7] if len(record) > 7 else 'Не указано'}\n"
-                    f"Дата отправки: {record[4] if len(record) > 4 else 'Не указано'}\n"
-                    f"Ожидаемая дата прибытия: {record[5] if len(record) > 5 else 'Не указано'}\n"
-                    f"Фактическая дата прибытия: {record[6] if len(record) > 6 and record[6] else 'Не указано'}\n"
-                    f"Склад: {record[9] if len(record) > 9 and record[9] else 'Не указано'}\n"
-                    f"Общее количество: {record[8] if len(record) > 8 else 'Не указано'}\n"
-                    f"Размеры: {record[10] if len(record) > 10 and record[10] else '0'}\n"
-                    f"Статус: {record[11] if len(record) > 11 and record[11] else 'Ну указан'}\n"
+                    f"📋 **Обновленная запись:**\n\n"
+                    f"🏷️ **Изделие:** {record[3] if len(record) > 3 else 'Не указано'}\n"
+                    f"🎨 **Цвет:** {record[7] if len(record) > 7 else 'Не указано'}\n"
+                    f"📦 **Склад:** {record[9] if len(record) > 9 else 'Не указано'}\n\n"
+                    f"📅 **Дата отправки:** {record[4] if len(record) > 4 else 'Не указано'}\n"
+                    f"📅 **Ожидаемая дата прибытия:** {record[5] if len(record) > 5 else 'Не указано'}\n"
+                    f"📅 **Фактическая дата прибытия:** {record[6] if len(record) > 6 and record[6] else 'Не указано'}\n\n"
+                    f"📊 **Общее количество:** {record[8] if len(record) > 8 else 'Не указано'}\n"
+                    f"📏 **Размеры:** {size_display}\n"
+                    f"📈 **Всего по размерам:** {total_sizes}"
                 )
 
                 markup = InlineKeyboardMarkup()
@@ -586,7 +839,8 @@ def setup_edit_handler(bot: TeleBot):
                 bot.send_message(
                     message.chat.id,
                     updated_values,
-                    reply_markup=markup
+                    reply_markup=markup,
+                    parse_mode='Markdown'
                 )
             except Exception as e:
                 logger.error(f"Error fetching updated record: {str(e)}")
