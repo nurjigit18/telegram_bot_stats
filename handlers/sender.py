@@ -5,6 +5,7 @@ from telebot.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from datetime import datetime
 from utils.google_sheets import GoogleSheetsManager
 from models.user_data import user_data
+import pytz
 
 # Configure logging
 logging.basicConfig(
@@ -39,7 +40,7 @@ def setup_file_sender_handlers(bot):
         payment_status[user_id] = {
             'status': True,
             'username': username,
-            'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            'timestamp': datetime.now(pytz.timezone('Asia/Bishkek')).strftime("%Y-%m-%d %H:%M:%S")
         }
         
         # Also save to Google Sheets Users worksheet
@@ -61,7 +62,7 @@ def setup_file_sender_handlers(bot):
                 users_worksheet.append_row([
                     str(user_id),
                     username,
-                    datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    datetime.now(pytz.timezone('Asia/Bishkek')).strftime("%Y-%m-%d %H:%M:%S")
                 ])
                 logger.info(f"User {username} (ID: {user_id}) added to Users worksheet")
         except Exception as e:
@@ -155,7 +156,7 @@ def setup_file_sender_handlers(bot):
                 file_type = message.document.mime_type
             
             # Add file record
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            timestamp = datetime.now(pytz.timezone('Asia/Bishkek')).strftime("%Y-%m-%d %H:%M:%S")
             caption = message.caption or ""
             
             files_worksheet.append_row([

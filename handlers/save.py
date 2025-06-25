@@ -8,6 +8,7 @@ from config import ADMIN_USER_USERNAMES
 from datetime import datetime
 import logging
 import re
+import pytz
 
 logger = logging.getLogger(__name__)
 
@@ -379,27 +380,17 @@ def setup_save_handler(bot: TeleBot):
             total_amount = record[8] if len(record) > 8 else "Unknown amount"
             warehouse_name = record[9] if len(record) > 9 else "Unknown warehouse"
             
-            # Extract and format sizes
-            sizes_info = []
-            size_data = {
-                'XS': record[10] if len(record) > 10 else None,
-                'S': record[11] if len(record) > 11 else None,
-                'M': record[12] if len(record) > 12 else None,
-                'L': record[13] if len(record) > 13 else None,
-                'XL': record[14] if len(record) > 14 else None,
-                '2XL': record[15] if len(record) > 15 else None,
-                '3XL': record[16] if len(record) > 16 else None,
-                '4XL': record[17] if len(record) > 17 else None,
-                '5XL': record[18] if len(record) > 18 else None,
-                '6XL': record[19] if len(record) > 19 else None,
-                '7XL': record[20] if len(record) > 20 else None,
-            }
+            # Extract sizes and create compact display
+            size_mapping = {10: 'XS', 11: 'S', 12: 'M', 13: 'L', 14: 'XL', 15: '2XL', 16: '3XL', 17: '4XL', 18: '5XL', 19: '6XL', 20: '7XL'}
+            active_sizes = []
 
-            for size, quantity in size_data.items():
-                if quantity and str(quantity).strip() not in ['', '0']:
-                    sizes_info.append(f"{size}: {quantity}")
+            for col_idx, size_name in size_mapping.items():
+                if len(record) > col_idx and record[col_idx]:
+                    qty = str(record[col_idx]).strip()
+                    if qty and qty != '0':
+                        active_sizes.append(f"{size_name}({qty})")
 
-            sizes_display = "\n".join([f"    {size}" for size in sizes_info]) if sizes_info else "    Не указаны"
+            sizes_text = ", ".join(active_sizes) if active_sizes else "—"
 
             notification_text = (
                 f"🆕 Новая запись добавлена в таблицу\n\n"
@@ -408,9 +399,10 @@ def setup_save_handler(bot: TeleBot):
                 f"Цвет: {product_color}\n"
                 f"Дата отправки: {shipment_date}\n"
                 f"Примерная дата прибытия: {estimated_arrival}\n"
+                f"Склад: {warehouse_name}\n"
                 f"Общее количество: {total_amount}\n"
-                f"Размеры:\n{sizes_display}\n"
-                f"Дата добавления: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                f"Размеры: {sizes_text}\n"
+                f"Дата добавления: {datetime.now(pytz.timezone('Asia/Bishkek')).strftime('%Y-%m-%d %H:%M:%S')}"
             )
 
             # Send notification to each admin

@@ -7,6 +7,7 @@ from config import ADMIN_USER_USERNAMES
 from utils.keyboards import show_product_selection
 from datetime import datetime
 import math
+import pytz
 
 logger = logging.getLogger(__name__)
 
@@ -303,7 +304,7 @@ def setup_status_handler(bot: TeleBot):
                 f"Изделие: {product_name}\n"
                 f"Цвет: {product_color}\n"
                 f"Новый статус: {new_status}\n"
-                f"Дата изменения: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                f"Дата изменения: {datetime.now(pytz.timezone('Asia/Bishkek')).strftime('%Y-%m-%d %H:%M:%S')}"
             )
 
             # Send notification to each admin

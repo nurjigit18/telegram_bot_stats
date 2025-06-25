@@ -1,13 +1,14 @@
 import gspread
+import logging
+import os
+import json
+import pytz
+import gspread
 from telebot import TeleBot
 from oauth2client.service_account import ServiceAccountCredentials
 from config import GOOGLE_CREDS_FILE, SHEET_ID
-import logging
 from datetime import datetime
 from models.user_data import user_data
-import os
-import json
-import gspread
 from google.oauth2.service_account import Credentials
 
 
@@ -170,7 +171,7 @@ def save_to_sheets(bot, message):
             logger.info("Updated worksheet headers")
         
         # Prepare timestamp
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = datetime.now(pytz.timezone('Asia/Bishkek')).strftime("%Y-%m-%d %H:%M:%S")
         
         # Prepare size data - extract individual size values from form_data
         size_columns = ['XS', 'S', 'M', 'L', 'XL', 'XXL', '2XL', '3XL', '4XL', '5XL', '6XL', '7XL']

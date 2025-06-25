@@ -8,6 +8,7 @@ import traceback
 import fcntl
 import gc
 import psutil
+import pytz
 from datetime import datetime
 from telebot import TeleBot
 from config import BOT_TOKEN
@@ -152,7 +153,7 @@ def update_heartbeat():
         runtime = time.time() - state.start_time
 
         with open(HEARTBEAT_FILE, 'w') as f:
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            now = datetime.now(pytz.timezone('Asia/Bishkek')).strftime("%Y-%m-%d %H:%M:%S")
             f.write(f"Bot alive at: {now}\n")
             f.write(f"PID: {os.getpid()}\n")
             f.write(f"Memory usage: {memory_usage:.2f} MB\n")
@@ -269,7 +270,7 @@ def main():
     try:
         # Record startup
         logger.info(f"Bot starting up... PID: {os.getpid()}")
-        state.last_reconnect = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        state.last_reconnect = datetime.now(pytz.timezone('Asia/Bishkek')).strftime("%Y-%m-%d %H:%M:%S")
         state.start_time = time.time()
 
         # Initialize memory monitor
