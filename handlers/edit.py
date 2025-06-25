@@ -12,6 +12,70 @@ logger = logging.getLogger(__name__)
 # Pagination settings
 ITEMS_PER_PAGE = 5  # Number of items to show per page
 
+def parse_new_size_format(size_input):
+    """
+    Parse size input in format: S-10, XL-20, 7XL-30
+    Returns dictionary with size as key and amount as value
+    """
+    sizes = {}
+    try:
+        # Split by comma and process each size-amount pair
+        pairs = [pair.strip() for pair in size_input.split(',')]
+        for pair in pairs:
+            if '-' not in pair:
+                continue
+            size, amount = pair.split('-', 1)  # Split only on first dash
+            size = size.strip().upper()
+            amount = int(amount.strip())
+            sizes[size] = amount
+        return sizes
+    except (ValueError, AttributeError):
+        return None
+
+def validate_new_size_format(size_input):
+    """
+    Validate size input format: S-10, XL-20, 7XL-30
+    """
+    if not size_input or not isinstance(size_input, str):
+        return False
+    
+    try:
+        pairs = [pair.strip() for pair in size_input.split(',')]
+        for pair in pairs:
+            if '-' not in pair:
+                return False
+            size, amount = pair.split('-', 1)
+            size = size.strip()
+            amount = amount.strip()
+            
+            # Check if size is not empty and amount is a valid integer
+            if not size or not amount.isdigit():
+                return False
+        return True
+    except:
+        return False
+
+def get_size_column_mapping():
+    """
+    Returns mapping of size names to column numbers (starting from column 10)
+    Adjust this mapping based on your actual Google Sheets column layout
+    """
+    return {
+        'XS': 10,
+        'S': 11, 
+        'M': 12,
+        'L': 13,
+        'XL': 14,
+        '2XL': 15,
+        '3XL': 16,
+        '4XL': 17,
+        '5XL': 18,
+        '6XL': 19,
+        '7XL': 20,
+        # Add more sizes as needed
+    }
+
+
 def setup_edit_handlers(bot: TeleBot):
     @bot.callback_query_handler(func=lambda call: call.data.startswith("edit_") or call.data == "cancel_edit" or call.data.startswith("product_"))
     def handle_edit_query(call):
@@ -76,7 +140,7 @@ def setup_edit_handlers(bot: TeleBot):
             elif current_action == "editing_amount":
                 bot.send_message(call.message.chat.id, "Введите новое общее количество (шт):")
             elif current_action == "editing_sizes":
-                bot.send_message(call.message.chat.id, "Введите новое распределение по размерам (S: 50 M: 25 L: 50):")
+                bot.send_message(call.message.chat.id, "Введите новое распределение по размерам (например: S-10, XL-20, 7XL-30):")
                 bot.register_next_step_handler(call.message, handle_sizes_input)
 
 
@@ -87,27 +151,49 @@ def setup_edit_handlers(bot: TeleBot):
         try:
             user_id = message.from_user.id
             row_index = user_data.get_user_data(user_id).get("editing_row")
-            size_amounts = message.text.strip()
+            size_input = message.text.strip()
 
-            if not validate_size_amounts(size_amounts):
-                bot.reply_to(message, "❌ Некорректный формат размеров. Используйте 'S: 50 M: 25 L: 50'.")
+            if not validate_new_size_format(size_input):
+                bot.reply_to(message, "❌ Некорректный формат размеров. Используйте формат: S-10, XL-20, 7XL-30")
                 return
 
-            s_amount, m_amount, l_amount = parse_size_amounts(size_amounts)
+            # Parse the new size format
+            sizes = parse_new_size_format(size_input)
+            if not sizes:
+                bot.reply_to(message, "❌ Ошибка при обработке размеров. Проверьте формат ввода.")
+                return
 
+            # Get size to column mapping
+            size_columns = get_size_column_mapping()
+            
             # Update values in Google Sheets
             sheets_manager = GoogleSheetsManager.get_instance()
-            sheets_manager.get_main_worksheet().update_cell(row_index, 11, str(s_amount)) # Column 11 is 'S'
-            sheets_manager.get_main_worksheet().update_cell(row_index, 12, str(m_amount)) # Column 12 is 'M'
-            sheets_manager.get_main_worksheet().update_cell(row_index, 13, str(l_amount)) # Column 13 is 'L'
+            worksheet = sheets_manager.get_main_worksheet()
+            
+            # First, clear all existing size columns for this row (set to 0 or empty)
+            for size, col_num in size_columns.items():
+                worksheet.update_cell(row_index, col_num, "0")
+            
+            # Then update with new values
+            updated_sizes = []
+            for size, amount in sizes.items():
+                if size in size_columns:
+                    col_num = size_columns[size]
+                    worksheet.update_cell(row_index, col_num, str(amount))
+                    updated_sizes.append(f"{size}: {amount}")
+                else:
+                    bot.reply_to(message, f"⚠️ Размер '{size}' не найден в системе. Доступные размеры: {', '.join(size_columns.keys())}")
+                    return
 
-            bot.reply_to(message, "✅ Размеры успешно обновлены!")
+            success_message = f"✅ Размеры успешно обновлены!\nОбновленные размеры: {', '.join(updated_sizes)}"
+            bot.reply_to(message, success_message)
             user_data.clear_user_data(user_id)
 
         except Exception as e:
             logger.error(f"Error handling sizes input: {str(e)}")
             bot.reply_to(message, f"❌ Ошибка при обновлении размеров: {str(e)}")
             user_data.clear_user_data(user_id)
+
 
 
 def setup_edit_handler(bot: TeleBot):
@@ -166,7 +252,8 @@ def setup_edit_handler(bot: TeleBot):
             product_name = record[3] if len(record) > 3 else "Unknown"
             product_color = record[7] if len(record) > 7 else "Unknown"
             shipment_date = record[4] if len(record) > 4 else "Unknown"
-            button_text = f"{product_name} - {product_color} ({shipment_date})"
+            warehouse_name = record[9] if len(record) > 9 else "Unknown"
+            button_text = f"{product_name} - {product_color} ({warehouse_name})"
             markup.add(InlineKeyboardButton(
                 button_text,
                 callback_data=f"edit_record_{idx}"
