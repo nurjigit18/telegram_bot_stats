@@ -14,56 +14,123 @@ logger = logging.getLogger(__name__)
 
 def parse_warehouse_sizes(warehouse_sizes_str):
     """
-    Parse warehouse and sizes string into structured data
+    Parse warehouse and sizes string into structured data with robust input handling
     
     Formats supported:
-    - Single warehouse: "Казань: S-50 M-25 L-25"
-    - Multiple warehouses: "Казань: S-30 M-40 , Москва: L-50 XL-80"
+    - Single warehouse: "Казань: S-50 M-25 L-25" or "Казань:S-50 M-25 L-25"
+    - Multiple warehouses: "Казань: S-30 M-40 , Москва: L-50 XL-80" or "Казань:S-30 M-40,Москва:L-50 XL-80"
+    - Handles missing spaces after colons and commas
+    - Handles missing spaces between sizes
+    - Case insensitive size names
     
     Returns: List of tuples [(warehouse_name, {size: quantity})]
     """
     try:
+        # Step 1: Clean and normalize the input string
+        cleaned_str = normalize_warehouse_input(warehouse_sizes_str)
+        
         warehouse_data = []
         
-        # Split by , for multiple warehouses
-        warehouse_parts = [part.strip() for part in warehouse_sizes_str.split(',')]
+        # Step 2: Split by comma for multiple warehouses (now properly spaced)
+        warehouse_parts = [part.strip() for part in cleaned_str.split(',') if part.strip()]
         
         for warehouse_part in warehouse_parts:
             if ':' not in warehouse_part:
                 return None  # Invalid format
             
+            # Step 3: Split warehouse name and sizes
             warehouse_name, sizes_str = warehouse_part.split(':', 1)
             warehouse_name = warehouse_name.strip()
             sizes_str = sizes_str.strip()
             
-            # Parse sizes (format: S-50 M-25 L-25)
-            sizes = {}
-            size_parts = sizes_str.split()
-            
-            for size_part in size_parts:
-                if '-' not in size_part:
-                    return None  # Invalid format
-                
-                size, quantity_str = size_part.split('-', 1)
-                size = size.strip().upper()
-                
-                try:
-                    quantity = int(quantity_str.strip())
-                    if quantity <= 0:
-                        return None  # Invalid quantity
-                    sizes[size] = quantity
-                except ValueError:
-                    return None  # Invalid number
-            
+            # Step 4: Parse sizes with robust splitting
+            sizes = parse_sizes_string(sizes_str)
             if not sizes:
-                return None  # No sizes found
+                return None  # Invalid sizes format
             
             warehouse_data.append((warehouse_name, sizes))
         
         return warehouse_data if warehouse_data else None
         
-    except Exception:
+    except Exception as e:
+        print(f"Error parsing warehouse sizes: {e}")
         return None
+    
+def normalize_warehouse_input(input_str):
+    """
+    Normalize warehouse input string by adding missing spaces and cleaning format
+    """
+    # Remove extra whitespace
+    cleaned = re.sub(r'\s+', ' ', input_str.strip())
+    
+    # Add space after colon if missing: "Склад:размеры" -> "Склад: размеры"
+    cleaned = re.sub(r'([^:\s]):([^\s])', r'\1: \2', cleaned)
+    
+    # Add space after comma if missing: "размеры,Склад" -> "размеры, Склад"
+    cleaned = re.sub(r'([^,\s]),([^\s])', r'\1, \2', cleaned)
+    
+    # Fix cases where sizes are stuck together (e.g., "xs-63s-80" -> "xs-63 s-80")
+    # This regex looks for pattern: size-number followed immediately by another size
+    cleaned = re.sub(r'([a-zA-Z]+)-(\d+)([a-zA-Z]+)-(\d+)', r'\1-\2 \3-\4', cleaned)
+    
+    # Handle multiple consecutive stuck sizes
+    # Keep applying the fix until no more changes are made
+    prev_cleaned = ""
+    while prev_cleaned != cleaned:
+        prev_cleaned = cleaned
+        cleaned = re.sub(r'([a-zA-Z]+)-(\d+)([a-zA-Z]+)-(\d+)', r'\1-\2 \3-\4', cleaned)
+    
+    return cleaned
+
+def parse_sizes_string(sizes_str):
+    """
+    Parse sizes string into dictionary with robust handling
+    Handles formats like: "S-50 M-25 L-25" or "s-50m-25l-25" or "S-50M-25L-25"
+    """
+    sizes = {}
+    
+    # Normalize the sizes string first
+    normalized_sizes = normalize_sizes_string(sizes_str)
+    
+    # Split by spaces to get individual size-quantity pairs
+    size_parts = [part.strip() for part in normalized_sizes.split() if part.strip()]
+    
+    for size_part in size_parts:
+        if '-' not in size_part:
+            return None  # Invalid format
+        
+        # Split by last dash to handle cases like "2xl-50" correctly
+        parts = size_part.rsplit('-', 1)
+        if len(parts) != 2:
+            return None
+            
+        size, quantity_str = parts
+        size = size.strip().upper()
+        
+        # Validate size name
+        valid_sizes = ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL', '5XL', '6XL', '7XL']
+        if size not in valid_sizes:
+            return None  # Invalid size
+        
+        try:
+            quantity = int(quantity_str.strip())
+            if quantity <= 0:
+                return None  # Invalid quantity
+            sizes[size] = quantity
+        except ValueError:
+            return None  # Invalid number
+    
+    return sizes if sizes else None
+
+def normalize_sizes_string(sizes_str):
+    """
+    Normalize sizes string by adding spaces between stuck-together sizes
+    """
+    # Handle cases like "xs-63s-80m-77l-71xl-28"
+    # Insert space before each size that follows a number
+    normalized = re.sub(r'(\d)([a-zA-Z]+)-', r'\1 \2-', sizes_str)
+    
+    return normalized
 
 def setup_save_handler(bot: TeleBot):
     @bot.message_handler(commands=['save'])
