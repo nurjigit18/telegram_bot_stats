@@ -162,7 +162,7 @@ def normalize_sizes_string(sizes_str):
     # Handle cases like "xs-63s-80m-77l-71xl-28" or "XS-52S-37M-34L-36XL-20"
     # Insert space before each size that follows a number
     # More robust regex to handle various size formats
-    normalized = re.sub(r'(\d+)([A-Za-zА-Яа-я]+)-', r'\1 \2-', sizes_str)
+    normalized = re.sub(r'(\d)([A-Za-zA-Яа-я])', r'\1 \2', normalized)
     
     # Handle edge cases where sizes might be stuck differently
     # Like "XS-52S-37" -> "XS-52 S-37"
