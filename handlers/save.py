@@ -22,6 +22,7 @@ def parse_warehouse_sizes(warehouse_sizes_str):
     - Handles missing spaces after colons and commas
     - Handles missing spaces between sizes
     - Case insensitive size names
+    - Handles mixed Latin/Cyrillic characters in warehouse names
     
     Returns: List of tuples [(warehouse_name, {size: quantity})]
     """
@@ -53,37 +54,42 @@ def parse_warehouse_sizes(warehouse_sizes_str):
         return warehouse_data if warehouse_data else None
         
     except Exception as e:
-        print(f"Error parsing warehouse sizes: {e}")
+        logger.error(f"Error parsing warehouse sizes: {e}")
         return None
     
 def normalize_warehouse_input(input_str):
     """
     Normalize warehouse input string by adding missing spaces and cleaning format
-    Handles both Latin and Cyrillic characters
+    Handles both Latin and Cyrillic characters with improved regex patterns
     """
     # Remove extra whitespace
     cleaned = re.sub(r'\s+', ' ', input_str.strip())
     
     # Add space after colon if missing: "Склад:размеры" -> "Склад: размеры"
-    # Updated regex to handle both Latin and Cyrillic characters
-    cleaned = re.sub(r'([^:\s]):([^\s])', r'\1: \2', cleaned)
+    # Handle both Latin and Cyrillic characters
+    cleaned = re.sub(r'([^\s:]):([^\s])', r'\1: \2', cleaned)
     
     # Add space after comma if missing: "размеры,Склад" -> "размеры, Склад"
-    cleaned = re.sub(r'([^,\s]),([^\s])', r'\1, \2', cleaned)
+    cleaned = re.sub(r'([^\s,]),([^\s])', r'\1, \2', cleaned)
     
-    # Fix cases where sizes are stuck together (e.g., "xs-63s-80" -> "xs-63 s-80")
-    # Updated regex to handle both Latin and Cyrillic size names (case insensitive)
-    cleaned = re.sub(r'([a-zA-Zа-яА-Я]+)-(\d+)([a-zA-Zа-яА-Я]+)-(\d+)', r'\1-\2 \3-\4', cleaned)
+    # Fix cases where sizes are stuck together with warehouse names or other sizes
+    # This handles cases like "Tyлa: XS-47 S-80" or "XS-52S-37M-34"
+    # First, handle sizes stuck to warehouse names after colon
+    cleaned = re.sub(r'(:)([A-Za-zА-Яа-я0-9]+)(-\d+)([A-Za-zА-Яа-я0-9]+)(-\d+)', r'\1\2\3 \4\5', cleaned)
     
-    # Handle multiple consecutive stuck sizes
+    # Then handle multiple consecutive stuck sizes
     # Keep applying the fix until no more changes are made
     prev_cleaned = ""
-    while prev_cleaned != cleaned:
+    max_iterations = 20  # Prevent infinite loops
+    iteration = 0
+    
+    while prev_cleaned != cleaned and iteration < max_iterations:
         prev_cleaned = cleaned
-        cleaned = re.sub(r'([a-zA-Zа-яА-Я]+)-(\d+)([a-zA-Zа-яА-Я]+)-(\d+)', r'\1-\2 \3-\4', cleaned)
+        # Handle pattern like "XS-52S-37M-34L-36XL-20"
+        cleaned = re.sub(r'([A-Za-zА-Яа-я0-9]+)-(\d+)([A-Za-zА-Яа-я0-9]+)-(\d+)', r'\1-\2 \3-\4', cleaned)
+        iteration += 1
     
     return cleaned
-
 
 def parse_sizes_string(sizes_str):
     """
@@ -101,17 +107,17 @@ def parse_sizes_string(sizes_str):
     
     for size_part in size_parts:
         if '-' not in size_part:
-            return None  # Invalid format
+            continue  # Skip invalid parts instead of returning None
         
         # Split by last dash to handle cases like "2xl-50" correctly
         parts = size_part.rsplit('-', 1)
         if len(parts) != 2:
-            return None
+            continue
             
         size, quantity_str = parts
         size = size.strip().upper()
         
-        # Enhanced size validation with Russian equivalents
+        # Enhanced size validation with Russian equivalents and common variations
         valid_sizes = {
             # English sizes
             'XS': 'XS', 'S': 'S', 'M': 'M', 'L': 'L', 'XL': 'XL', 
@@ -122,34 +128,45 @@ def parse_sizes_string(sizes_str):
             '2ХЛ': '2XL', '3ХЛ': '3XL', '4ХЛ': '4XL', '5ХЛ': '5XL',
             '6ХЛ': '6XL', '7ХЛ': '7XL',
             # Mixed common variations
-            'XС': 'XS', 'СS': 'S', 'ХS': 'XS', 'XЛ': 'XL', 'ЛL': 'L'
+            'XС': 'XS', 'СS': 'S', 'ХS': 'XS', 'XЛ': 'XL', 'ЛL': 'L',
+            # Additional common variations
+            'XXL': 'XL', 'XXXL': '3XL'
         }
         
         # Convert to standard size
         if size in valid_sizes:
             standard_size = valid_sizes[size]
         else:
-            return None  # Invalid size
+            logger.warning(f"Unknown size: {size}")
+            continue  # Skip unknown sizes instead of failing
         
         try:
             quantity = int(quantity_str.strip())
-            if quantity <= 0:
-                return None  # Invalid quantity
+            if quantity < 0:
+                logger.warning(f"Negative quantity for size {size}: {quantity}")
+                continue  # Skip negative quantities
+            if quantity == 0:
+                continue  # Skip zero quantities
             sizes[standard_size] = quantity
         except ValueError:
-            return None  # Invalid number
+            logger.warning(f"Invalid quantity for size {size}: {quantity_str}")
+            continue  # Skip invalid quantities
     
     return sizes if sizes else None
 
 def normalize_sizes_string(sizes_str):
     """
     Normalize sizes string by adding spaces between stuck-together sizes
-    Handles both Latin and Cyrillic characters
+    Handles both Latin and Cyrillic characters with improved pattern matching
     """
-    # Handle cases like "xs-63s-80m-77l-71xl-28"
+    # Handle cases like "xs-63s-80m-77l-71xl-28" or "XS-52S-37M-34L-36XL-20"
     # Insert space before each size that follows a number
-    # Updated regex to handle both Latin and Cyrillic characters
-    normalized = re.sub(r'(\d)([a-zA-Zа-яА-Я]+)-', r'\1 \2-', sizes_str)
+    # More robust regex to handle various size formats
+    normalized = re.sub(r'(\d+)([A-Za-zА-Яа-я]+)-', r'\1 \2-', sizes_str)
+    
+    # Handle edge cases where sizes might be stuck differently
+    # Like "XS-52S-37" -> "XS-52 S-37"
+    normalized = re.sub(r'([A-Za-zА-Яа-я]+)-(\d+)([A-Za-zА-Яа-я]+)-', r'\1-\2 \3-', normalized)
     
     return normalized
 
@@ -167,6 +184,12 @@ def validate_warehouse_sizes_enhanced(warehouse_sizes_str):
             return False, "Не удалось разобрать формат складов и размеров"
         if len(parsed_data) == 0:
             return False, "Не найдено ни одного склада"
+        
+        # Additional validation: check if all warehouses have valid sizes
+        for warehouse_name, sizes in parsed_data:
+            if not sizes:
+                return False, f"Склад '{warehouse_name}' не имеет допустимых размеров"
+        
         return True, None
     except Exception as e:
         return False, f"Ошибка при разборе: {str(e)}"
@@ -210,8 +233,9 @@ def setup_save_handler(bot: TeleBot):
             "📝 Формат складов и размеров:\n"
             "• Один склад: Склад: размер-количество размер-количество\n"
             "• Несколько складов: Склад1: размеры , Склад2: размеры\n"
-            "• Разделитель складов: , (вертикальная черта)\n"
-            "• Разделитель размеров: - (дефис)\n\n"
+            "• Разделитель складов: , (запятая)\n"
+            "• Разделитель размеров: - (дефис)\n"
+            "• Поддерживаются размеры: XS, S, M, L, XL, 2XL, 3XL, 4XL, 5XL, 6XL, 7XL\n\n"
             "Нажмите /cancel для отмены заполнения."
         )
         bot.reply_to(message, sample_format)
@@ -234,7 +258,7 @@ def setup_save_handler(bot: TeleBot):
             lines = [line.strip() for line in message.text.strip().split('\n') if line.strip()]
             
             # Check if we have the correct number of lines
-            expected_fields = 6  # Changed from 7 to 6 (removed separate warehouse and size fields)
+            expected_fields = 6
             if len(lines) != expected_fields:
                 error_msg = (
                     f"❌ Неверное количество полей. Ожидается {expected_fields} строк, получено {len(lines)}.\n\n"
@@ -253,9 +277,9 @@ def setup_save_handler(bot: TeleBot):
             product_name = lines[0]
             product_color = lines[1]
             total_amount_str = lines[2]
-            warehouse_sizes_str = lines[3]  # Combined warehouse and sizes
-            shipment_date_str = lines[4]    # Updated index
-            estimated_arrival_str = lines[5]  # Updated index
+            warehouse_sizes_str = lines[3]
+            shipment_date_str = lines[4]
+            estimated_arrival_str = lines[5]
 
             errors = []
 
@@ -379,102 +403,6 @@ def setup_save_handler(bot: TeleBot):
             bot.reply_to(message, f"❌ Произошла ошибка при обработке данных: {str(e)}. Попробуйте еще раз.")
             user_data.clear_user_data(user_id)
 
-
-   # Keep the old step-by-step handler for backward compatibility
-    @bot.message_handler(commands=['save_step'])
-    def start_step_save_process(message):
-        """Start the product data collection process (step-by-step)"""
-        user_id = message.from_user.id
-
-        # Initialize user data
-        user_data.initialize_user(user_id)
-        user_data.set_current_action(user_id, "saving_new")
-        user_data.set_current_step(user_id, 0)
-        user_data.initialize_form_data(user_id)
-
-        # Send initial messages
-        cancel_message = "Заполните все данные по порядку. Нажмите или ведите /cancel для отмены заполнения."
-        bot.reply_to(message, cancel_message)
-        bot.send_message(message.chat.id, PROMPTS[STEPS[0]])
-
-    @bot.message_handler(func=lambda message:
-        user_data.has_user(message.from_user.id) and
-        user_data.get_current_action(message.from_user.id) == "saving_new")
-    def handle_save_input(message):
-        """Handle input for the form when saving new data (step-by-step)"""
-        if message.text.startswith('/'):  # Skip if it's a command
-            if message.text == '/cancel':
-                user_data.clear_user_data(message.from_user.id)
-                bot.reply_to(message, "✖️ Процесс заполнения отменен.")
-            return
-
-        user_id = message.from_user.id
-        current_step = user_data.get_current_step(user_id)
-        step_name = STEPS[current_step]
-        response = message.text.strip()
-
-        # Validate input based on step
-        valid = True
-        error_msg = None
-
-        try:
-            if step_name == "shipment_date" or step_name == "estimated_arrival":
-                if not validate_date(response):
-                    valid = False
-                    error_msg = "Неверный формат даты. Используйте дд/мм/гггг или дд.мм.гггг"
-                else:
-                    response = standardize_date(response)
-
-            elif step_name == "total_amount":
-                if not validate_amount(response):
-                    valid = False
-                    error_msg = "Неверное количество. Введите положительное число."
-                else:
-                    response = int(response)
-
-            elif step_name == "size_amounts":
-                if not validate_size_amounts(response):
-                    valid = False
-                    error_msg = "Неверный формат. Используйте формат 'S: 50 M: 25 L: 50'"
-
-            if valid:
-                # Save response
-                if step_name == "size_amounts":
-                    sizes = parse_size_amounts(response)
-                    for size_key, size_value in sizes.items():
-                        user_data.update_form_data(user_id, size_key, size_value)
-                else:
-                    user_data.update_form_data(user_id, step_name, response)
-
-                # Move to next step or complete
-                next_step = current_step + 1
-
-                if next_step < len(STEPS):
-                    # Move to next step
-                    user_data.set_current_step(user_id, next_step)
-                    next_step_name = STEPS[next_step]
-                    bot.send_message(message.chat.id, PROMPTS[next_step_name])
-                else:
-                    # Complete the process
-                    try:
-                        row_index = save_to_sheets(bot, message)
-                        # After successful save, notify admins about the new record
-                        notify_admins_about_new_record(bot, message, row_index)
-                    except Exception as e:
-                        logger.error(f"Error in save_to_sheets: {str(e)}")
-                        bot.reply_to(message, "❌ Произошла ошибка при сохранении данных. Попробуйте еще раз.")
-                        user_data.clear_user_data(user_id)
-                        return
-            else:
-                # Send error message and repeat the prompt
-                bot.reply_to(message, error_msg)
-                bot.send_message(message.chat.id, PROMPTS[step_name])
-
-        except Exception as e:
-            logger.error(f"Error in handle_save_input: {str(e)}")
-            bot.reply_to(message, "❌ Произошла ошибка при обработке данных. Попробуйте еще раз.")
-            user_data.clear_user_data(user_id)
-
     def notify_admins_about_new_record(bot, message, row_index):
         """Notify all admins about a new record being added to Google Sheets"""
         try:
@@ -546,7 +474,6 @@ def setup_save_handler(bot: TeleBot):
             logger.error(f"Error notifying admins about new record: {str(e)}")
             # This error shouldn't prevent the user from completing their task
             # so we just log it and don't send any error message to the user
-
 
     @bot.message_handler(commands=['cancel'])
     def cancel_save_process(message):
