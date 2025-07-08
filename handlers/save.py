@@ -93,82 +93,47 @@ def normalize_warehouse_input(input_str):
 
 def parse_sizes_string(sizes_str):
     """
-    Parse sizes string into dictionary with robust handling
+    Parse sizes string into dictionary with robust handling.
     Handles formats like: "S-50 M-25 L-25" or "s-50m-25l-25" or "S-50M-25L-25"
-    Now supports both Latin and Cyrillic characters, case insensitive
+    Supports both Latin and Cyrillic characters, case insensitive.
     """
     sizes = {}
-    
-    # Normalize the sizes string first
-    normalized_sizes = normalize_sizes_string(sizes_str)
-    
-    # Split by spaces to get individual size-quantity pairs
-    size_parts = [part.strip() for part in normalized_sizes.split() if part.strip()]
-    
-    for size_part in size_parts:
-        if '-' not in size_part:
-            continue  # Skip invalid parts instead of returning None
-        
-        # Split by last dash to handle cases like "2xl-50" correctly
-        parts = size_part.rsplit('-', 1)
-        if len(parts) != 2:
-            continue
-            
-        size, quantity_str = parts
+
+    # Regex finds all size-quantity pairs like 'xs-52', '2xl-1', etc.
+    pattern = r'([a-zA-Zа-яА-Я0-9]+)-(\d+)'
+    matches = re.findall(pattern, sizes_str)
+    if not matches:
+        return None
+
+    valid_sizes = {
+        # English sizes
+        'XS': 'XS', 'S': 'S', 'M': 'M', 'L': 'L', 'XL': 'XL',
+        '2XL': '2XL', '3XL': '3XL', '4XL': '4XL', '5XL': '5XL',
+        '6XL': '6XL', '7XL': '7XL',
+        # Russian equivalents
+        'ХС': 'XS', 'С': 'S', 'М': 'M', 'Л': 'L', 'ХЛ': 'XL',
+        '2ХЛ': '2XL', '3ХЛ': '3XL', '4ХЛ': '4XL', '5ХЛ': '5XL',
+        '6ХЛ': '6XL', '7ХЛ': '7XL',
+        # Mixed common variations
+        'XС': 'XS', 'СS': 'S', 'ХS': 'XS', 'XЛ': 'XL', 'ЛL': 'L',
+        'XXL': 'XL', 'XXXL': '3XL'
+    }
+
+    for size, qty in matches:
         size = size.strip().upper()
-        
-        # Enhanced size validation with Russian equivalents and common variations
-        valid_sizes = {
-            # English sizes
-            'XS': 'XS', 'S': 'S', 'M': 'M', 'L': 'L', 'XL': 'XL', 
-            '2XL': '2XL', '3XL': '3XL', '4XL': '4XL', '5XL': '5XL', 
-            '6XL': '6XL', '7XL': '7XL',
-            # Russian equivalents
-            'ХС': 'XS', 'С': 'S', 'М': 'M', 'Л': 'L', 'ХЛ': 'XL',
-            '2ХЛ': '2XL', '3ХЛ': '3XL', '4ХЛ': '4XL', '5ХЛ': '5XL',
-            '6ХЛ': '6XL', '7ХЛ': '7XL',
-            # Mixed common variations
-            'XС': 'XS', 'СS': 'S', 'ХS': 'XS', 'XЛ': 'XL', 'ЛL': 'L',
-            # Additional common variations
-            'XXL': 'XL', 'XXXL': '3XL'
-        }
-        
-        # Convert to standard size
         if size in valid_sizes:
-            standard_size = valid_sizes[size]
+            std_size = valid_sizes[size]
+            try:
+                quantity = int(qty)
+                if quantity > 0:
+                    sizes[std_size] = quantity
+            except ValueError:
+                continue  # skip invalid quantities
         else:
-            logger.warning(f"Unknown size: {size}")
-            continue  # Skip unknown sizes instead of failing
-        
-        try:
-            quantity = int(quantity_str.strip())
-            if quantity < 0:
-                logger.warning(f"Negative quantity for size {size}: {quantity}")
-                continue  # Skip negative quantities
-            if quantity == 0:
-                continue  # Skip zero quantities
-            sizes[standard_size] = quantity
-        except ValueError:
-            logger.warning(f"Invalid quantity for size {size}: {quantity_str}")
-            continue  # Skip invalid quantities
-    
+            continue  # skip unknown sizes
+
     return sizes if sizes else None
 
-def normalize_sizes_string(sizes_str):
-    """
-    Normalize sizes string by adding spaces between stuck-together sizes
-    Handles both Latin and Cyrillic characters with improved pattern matching
-    """
-    # Handle cases like "xs-63s-80m-77l-71xl-28" or "XS-52S-37M-34L-36XL-20"
-    # Insert space before each size that follows a number
-    # More robust regex to handle various size formats
-    normalized = re.sub(r'(\d)([A-Za-zA-Яа-я])', r'\1 \2', normalized)
-    
-    # Handle edge cases where sizes might be stuck differently
-    # Like "XS-52S-37" -> "XS-52 S-37"
-    normalized = re.sub(r'([A-Za-zА-Яа-я]+)-(\d+)([A-Za-zА-Яа-я]+)-', r'\1-\2 \3-', normalized)
-    
-    return normalized
 
 def validate_warehouse_sizes_enhanced(warehouse_sizes_str):
     """
