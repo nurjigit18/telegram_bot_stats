@@ -59,33 +59,37 @@ def parse_warehouse_sizes(warehouse_sizes_str):
 def normalize_warehouse_input(input_str):
     """
     Normalize warehouse input string by adding missing spaces and cleaning format
+    Handles both Latin and Cyrillic characters
     """
     # Remove extra whitespace
     cleaned = re.sub(r'\s+', ' ', input_str.strip())
     
     # Add space after colon if missing: "Склад:размеры" -> "Склад: размеры"
+    # Updated regex to handle both Latin and Cyrillic characters
     cleaned = re.sub(r'([^:\s]):([^\s])', r'\1: \2', cleaned)
     
     # Add space after comma if missing: "размеры,Склад" -> "размеры, Склад"
     cleaned = re.sub(r'([^,\s]),([^\s])', r'\1, \2', cleaned)
     
     # Fix cases where sizes are stuck together (e.g., "xs-63s-80" -> "xs-63 s-80")
-    # This regex looks for pattern: size-number followed immediately by another size
-    cleaned = re.sub(r'([a-zA-Z]+)-(\d+)([a-zA-Z]+)-(\d+)', r'\1-\2 \3-\4', cleaned)
+    # Updated regex to handle both Latin and Cyrillic size names (case insensitive)
+    cleaned = re.sub(r'([a-zA-Zа-яА-Я]+)-(\d+)([a-zA-Zа-яА-Я]+)-(\d+)', r'\1-\2 \3-\4', cleaned)
     
     # Handle multiple consecutive stuck sizes
     # Keep applying the fix until no more changes are made
     prev_cleaned = ""
     while prev_cleaned != cleaned:
         prev_cleaned = cleaned
-        cleaned = re.sub(r'([a-zA-Z]+)-(\d+)([a-zA-Z]+)-(\d+)', r'\1-\2 \3-\4', cleaned)
+        cleaned = re.sub(r'([a-zA-Zа-яА-Я]+)-(\d+)([a-zA-Zа-яА-Я]+)-(\d+)', r'\1-\2 \3-\4', cleaned)
     
     return cleaned
+
 
 def parse_sizes_string(sizes_str):
     """
     Parse sizes string into dictionary with robust handling
     Handles formats like: "S-50 M-25 L-25" or "s-50m-25l-25" or "S-50M-25L-25"
+    Now supports both Latin and Cyrillic characters, case insensitive
     """
     sizes = {}
     
@@ -107,16 +111,31 @@ def parse_sizes_string(sizes_str):
         size, quantity_str = parts
         size = size.strip().upper()
         
-        # Validate size name
-        valid_sizes = ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL', '4XL', '5XL', '6XL', '7XL']
-        if size not in valid_sizes:
+        # Enhanced size validation with Russian equivalents
+        valid_sizes = {
+            # English sizes
+            'XS': 'XS', 'S': 'S', 'M': 'M', 'L': 'L', 'XL': 'XL', 
+            '2XL': '2XL', '3XL': '3XL', '4XL': '4XL', '5XL': '5XL', 
+            '6XL': '6XL', '7XL': '7XL',
+            # Russian equivalents
+            'ХС': 'XS', 'С': 'S', 'М': 'M', 'Л': 'L', 'ХЛ': 'XL',
+            '2ХЛ': '2XL', '3ХЛ': '3XL', '4ХЛ': '4XL', '5ХЛ': '5XL',
+            '6ХЛ': '6XL', '7ХЛ': '7XL',
+            # Mixed common variations
+            'XС': 'XS', 'СS': 'S', 'ХS': 'XS', 'XЛ': 'XL', 'ЛL': 'L'
+        }
+        
+        # Convert to standard size
+        if size in valid_sizes:
+            standard_size = valid_sizes[size]
+        else:
             return None  # Invalid size
         
         try:
             quantity = int(quantity_str.strip())
             if quantity <= 0:
                 return None  # Invalid quantity
-            sizes[size] = quantity
+            sizes[standard_size] = quantity
         except ValueError:
             return None  # Invalid number
     
@@ -125,12 +144,32 @@ def parse_sizes_string(sizes_str):
 def normalize_sizes_string(sizes_str):
     """
     Normalize sizes string by adding spaces between stuck-together sizes
+    Handles both Latin and Cyrillic characters
     """
     # Handle cases like "xs-63s-80m-77l-71xl-28"
     # Insert space before each size that follows a number
-    normalized = re.sub(r'(\d)([a-zA-Z]+)-', r'\1 \2-', sizes_str)
+    # Updated regex to handle both Latin and Cyrillic characters
+    normalized = re.sub(r'(\d)([a-zA-Zа-яА-Я]+)-', r'\1 \2-', sizes_str)
     
     return normalized
+
+def validate_warehouse_sizes_enhanced(warehouse_sizes_str):
+    """
+    Enhanced validation for warehouse sizes string with better error reporting
+    """
+    if not warehouse_sizes_str or not warehouse_sizes_str.strip():
+        return False, "Строка складов и размеров пуста"
+    
+    try:
+        # Try to parse the warehouse sizes
+        parsed_data = parse_warehouse_sizes(warehouse_sizes_str)
+        if parsed_data is None:
+            return False, "Не удалось разобрать формат складов и размеров"
+        if len(parsed_data) == 0:
+            return False, "Не найдено ни одного склада"
+        return True, None
+    except Exception as e:
+        return False, f"Ошибка при разборе: {str(e)}"
 
 def setup_save_handler(bot: TeleBot):
     @bot.message_handler(commands=['save'])
@@ -235,17 +274,27 @@ def setup_save_handler(bot: TeleBot):
                 total_amount = int(total_amount_str)
 
             # Validate warehouse and sizes format
-            if not validate_warehouse_sizes(warehouse_sizes_str):
-                errors.append("• Неверный формат складов и размеров. Используйте формат 'Склад1: S-50 M-25 , Склад2: L-30'")
+            is_valid, error_msg = validate_warehouse_sizes_enhanced(warehouse_sizes_str)
+            if not is_valid:
+                errors.append(f"• {error_msg}")
             else:
                 warehouse_data = parse_warehouse_sizes(warehouse_sizes_str)
                 if not warehouse_data:
-                    errors.append("• Ошибка при разборе складов и размеров")
+                    errors.append("• Ошибка при разборе складов и размеров. Проверьте названия размеров и количества")
                 else:
                     # Validate that total amounts match
                     calculated_total = sum(sum(sizes.values()) for _, sizes in warehouse_data)
                     if calculated_total != total_amount:
                         errors.append(f"• Сумма размеров ({calculated_total}) не совпадает с общим количеством ({total_amount})")
+                        
+                        # Provide detailed breakdown for debugging
+                        breakdown = []
+                        for warehouse_name, sizes in warehouse_data:
+                            warehouse_total = sum(sizes.values())
+                            size_details = ", ".join([f"{size}:{qty}" for size, qty in sizes.items()])
+                            breakdown.append(f"  {warehouse_name}: {size_details} = {warehouse_total}")
+                        
+                        errors.append("Разбивка по складам:\n" + "\n".join(breakdown))
 
             # Validate shipment date
             if not validate_date(shipment_date_str):
