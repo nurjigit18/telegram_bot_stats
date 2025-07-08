@@ -253,7 +253,7 @@ def setup_edit_handler(bot: TeleBot):
             product_color = record[7] if len(record) > 7 else "Unknown"
             shipment_date = record[4] if len(record) > 4 else "Unknown"
             warehouse_name = record[9] if len(record) > 9 else "Unknown"
-            button_text = f"{product_name} - {product_color} ({warehouse_name})"
+            button_text = f"({warehouse_name}) {product_name} - {product_color}"
             markup.add(InlineKeyboardButton(
                 button_text,
                 callback_data=f"edit_record_{idx}"
