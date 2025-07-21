@@ -4,7 +4,8 @@ from constants import PROMPTS, STEPS
 from models.user_data import user_data
 from utils.validators import validate_date, validate_amount, validate_size_amounts, parse_size_amounts, standardize_date, validate_warehouse_sizes
 from utils.google_sheets import save_to_sheets, GoogleSheetsManager
-from config import ADMIN_USER_USERNAMES
+from utils.openai_parser import openai_parser
+from config import ADMIN_USER_USERNAMES, OPENAI_ENABLED
 from datetime import datetime
 import logging
 import re
@@ -170,39 +171,75 @@ def setup_save_handler(bot: TeleBot):
         user_data.set_current_action(user_id, "saving_new_single")
         user_data.initialize_form_data(user_id)
 
-        # Send sample format
-        sample_format = (
-            "Заполните все данные одним сообщением в следующем формате:\n\n"
-            "📋 Образец заполнения:\n"
-            "Название изделия:\n"
-            "Цвет изделия:\n"
-            "Количество (шт):\n"
-            "Склады и размеры:\n"
-            "Дата отправки (дд/мм/гггг):\n"
-            "Дата возможного прибытия (дд/мм/гггг):\n\n"
-            "💡 Примеры:\n\n"
-            "🔹 Один склад:\n"
-            "рубашка\n"
-            "красный\n"
-            "100\n"
-            "Казань: S-50 M-25 L-25\n"
-            "12.12.2021\n"
-            "15/12/2021\n\n"
-            "🔹 Несколько складов:\n"
-            "рубашка\n"
-            "синий\n"
-            "200\n"
-            "Казань: S-30 M-40 , Москва: L-50 XL-80\n"
-            "12.12.2021\n"
-            "15/12/2021\n\n"
-            "📝 Формат складов и размеров:\n"
-            "• Один склад: Склад: размер-количество размер-количество\n"
-            "• Несколько складов: Склад1: размеры , Склад2: размеры\n"
-            "• Разделитель складов: , (запятая)\n"
-            "• Разделитель размеров: - (дефис)\n"
-            "• Поддерживаются размеры: XS, S, M, L, XL, 2XL, 3XL, 4XL, 5XL, 6XL, 7XL\n\n"
-            "Нажмите /cancel для отмены заполнения."
-        )
+        # Send sample format with natural language support info
+        if OPENAI_ENABLED:
+            sample_format = (
+                "🤖 Теперь вы можете вводить данные в свободной форме!\n\n"
+                "💬 Просто опишите товар естественным языком, например:\n"
+                "\"Привет! Мне нужно сохранить данные о красных рубашках. У нас есть 100 штук, которые будут распределены по складу в Казани: 50 размера S, 25 размера M и 25 размера L. Отправляем 12 декабря 2021 года, а прибыть должны примерно 15 декабря.\"\n\n"
+                "📋 Или используйте строгий формат (6 строк):\n"
+                "Название изделия:\n"
+                "Цвет изделия:\n"
+                "Количество (шт):\n"
+                "Склады и размеры:\n"
+                "Дата отправки (дд/мм/гггг):\n"
+                "Дата возможного прибытия (дд/мм/гггг):\n\n"
+                "💡 Примеры строгого формата:\n\n"
+                "🔹 Один склад:\n"
+                "рубашка\n"
+                "красный\n"
+                "100\n"
+                "Казань: S-50 M-25 L-25\n"
+                "12.12.2021\n"
+                "15/12/2021\n\n"
+                "🔹 Несколько складов:\n"
+                "рубашка\n"
+                "синий\n"
+                "200\n"
+                "Казань: S-30 M-40 , Москва: L-50 XL-80\n"
+                "12.12.2021\n"
+                "15/12/2021\n\n"
+                "📝 Формат складов и размеров:\n"
+                "• Один склад: Склад: размер-количество размер-количество\n"
+                "• Несколько складов: Склад1: размеры , Склад2: размеры\n"
+                "• Разделитель складов: , (запятая)\n"
+                "• Разделитель размеров: - (дефис)\n"
+                "• Поддерживаются размеры: XS, S, M, L, XL, 2XL, 3XL, 4XL, 5XL, 6XL, 7XL\n\n"
+                "Нажмите /cancel для отмены заполнения."
+            )
+        else:
+            sample_format = (
+                "Заполните все данные одним сообщением в следующем формате:\n\n"
+                "📋 Образец заполнения:\n"
+                "Название изделия:\n"
+                "Цвет изделия:\n"
+                "Количество (шт):\n"
+                "Склады и размеры:\n"
+                "Дата отправки (дд/мм/гггг):\n"
+                "Дата возможного прибытия (дд/мм/гггг):\n\n"
+                "💡 Примеры:\n\n"
+                "🔹 Один склад:\n"
+                "рубашка\n"
+                "красный\n"
+                "100\n"
+                "Казань: S-50 M-25 L-25\n"
+                "12.12.2021\n"
+                "15/12/2021\n\n"
+                "🔹 Несколько складов:\n"
+                "рубашка\n"
+                "синий\n"
+                "200\n"
+                "Казань: S-30 M-40 , Москва: L-50 XL-80\n"
+                "12.12.2021\n"
+                "15/12/2021\n\n"
+                "📝 Формат складов и размеров:\n"
+                "• Один склад: Склад: размер-количество размер-количество\n"
+                "• Несколько складов: Склад1: размеры , Склад2: размеры\n"
+                "• Разделитель складов: , (запятая)\n"
+                "• Разделитель размеров: - (дефис)\n"
+                "• Поддерживаются размеры: XS, S, M, L, XL, 2XL, 3XL, 4XL, 5XL, 6XL, 7XL\n\n"
+                "Нажмите /cancel для отмены заполнения."
+            )
         bot.reply_to(message, sample_format)
 
     @bot.message_handler(func=lambda message:
@@ -219,32 +256,83 @@ def setup_save_handler(bot: TeleBot):
         user_id = message.from_user.id
         
         try:
-            # Parse the input message
-            lines = [line.strip() for line in message.text.strip().split('\n') if line.strip()]
+            # Try OpenAI parsing first if enabled
+            openai_success = False
+            if OPENAI_ENABLED:
+                bot.reply_to(message, "🤖 Обрабатываю ваш запрос с помощью ИИ...")
+                
+                success, parsed_data, error_msg = openai_parser.parse_product_data(message.text)
+                
+                if success and parsed_data:
+                    # Extract data from OpenAI response
+                    product_name = parsed_data['product_name']
+                    product_color = parsed_data['product_color']
+                    total_amount = parsed_data['total_amount']
+                    warehouse_sizes_str = parsed_data['warehouse_sizes']
+                    shipment_date_str = parsed_data['shipment_date']
+                    estimated_arrival_str = parsed_data['estimated_arrival']
+                    
+                    # Show what was extracted for confirmation
+                    confirmation_msg = (
+                        "🤖 ИИ извлек следующие данные:\n\n"
+                        f"📦 Название изделия: {product_name}\n"
+                        f"🎨 Цвет изделия: {product_color}\n"
+                        f"📊 Количество: {total_amount} шт\n"
+                        f"🏪 Склады и размеры: {warehouse_sizes_str}\n"
+                        f"📅 Дата отправки: {shipment_date_str}\n"
+                        f"📅 Дата прибытия: {estimated_arrival_str}\n\n"
+                        "✅ Проверяю данные..."
+                    )
+                    bot.reply_to(message, confirmation_msg)
+                    
+                    openai_success = True
+                    total_amount_str = str(total_amount)
+                else:
+                    logger.warning(f"OpenAI parsing failed: {error_msg}")
+                    bot.reply_to(message, f"🤖 ИИ не смог обработать запрос: {error_msg}\n\n📋 Попробую обработать как строгий формат...")
             
-            # Check if we have the correct number of lines
-            expected_fields = 6
-            if len(lines) != expected_fields:
-                error_msg = (
-                    f"❌ Неверное количество полей. Ожидается {expected_fields} строк, получено {len(lines)}.\n\n"
-                    "Убедитесь, что вы заполнили все поля в правильном порядке:\n"
-                    "1. Название изделия\n"
-                    "2. Цвет изделия\n"
-                    "3. Количество (шт)\n"
-                    "4. Склады и размеры\n"
-                    "5. Дата отправки\n"
-                    "6. Дата возможного прибытия"
-                )
-                bot.reply_to(message, error_msg)
-                return
+            # Fall back to strict format parsing if OpenAI failed or is disabled
+            if not openai_success:
+                # Parse the input message
+                lines = [line.strip() for line in message.text.strip().split('\n') if line.strip()]
+                
+                # Check if we have the correct number of lines
+                expected_fields = 6
+                if len(lines) != expected_fields:
+                    if OPENAI_ENABLED:
+                        error_msg = (
+                            f"❌ Не удалось обработать ни через ИИ, ни через строгий формат.\n\n"
+                            f"Для строгого формата ожидается {expected_fields} строк, получено {len(lines)}.\n\n"
+                            "Убедитесь, что вы заполнили все поля в правильном порядке:\n"
+                            "1. Название изделия\n"
+                            "2. Цвет изделия\n"
+                            "3. Количество (шт)\n"
+                            "4. Склады и размеры\n"
+                            "5. Дата отправки\n"
+                            "6. Дата возможного прибытия\n\n"
+                            "Или попробуйте описать товар естественным языком."
+                        )
+                    else:
+                        error_msg = (
+                            f"❌ Неверное количество полей. Ожидается {expected_fields} строк, получено {len(lines)}.\n\n"
+                            "Убедитесь, что вы заполнили все поля в правильном порядке:\n"
+                            "1. Название изделия\n"
+                            "2. Цвет изделия\n"
+                            "3. Количество (шт)\n"
+                            "4. Склады и размеры\n"
+                            "5. Дата отправки\n"
+                            "6. Дата возможного прибытия"
+                        )
+                    bot.reply_to(message, error_msg)
+                    return
 
-            # Extract and validate each field
-            product_name = lines[0]
-            product_color = lines[1]
-            total_amount_str = lines[2]
-            warehouse_sizes_str = lines[3]
-            shipment_date_str = lines[4]
-            estimated_arrival_str = lines[5]
+                # Extract and validate each field
+                product_name = lines[0]
+                product_color = lines[1]
+                total_amount_str = lines[2]
+                warehouse_sizes_str = lines[3]
+                shipment_date_str = lines[4]
+                estimated_arrival_str = lines[5]
 
             errors = []
 
