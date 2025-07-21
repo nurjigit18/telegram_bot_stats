@@ -1,3 +1,0 @@
-  File "/home/nurjigit18/telegrambot/main.py", line 319
-    try:
-IndentationError: expected an indented block after 'try' statement on line 319
