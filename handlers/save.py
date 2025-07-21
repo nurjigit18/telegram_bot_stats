@@ -176,35 +176,8 @@ def setup_save_handler(bot: TeleBot):
             sample_format = (
                 "🤖 Теперь вы можете вводить данные в свободной форме!\n\n"
                 "💬 Просто опишите товар естественным языком, например:\n"
-                "\"Привет! Мне нужно сохранить данные о красных рубашках. У нас есть 100 штук, которые будут распределены по складу в Казани: 50 размера S, 25 размера M и 25 размера L. Отправляем 12 декабря 2021 года, а прибыть должны примерно 15 декабря.\"\n\n"
-                "📋 Или используйте строгий формат (6 строк):\n"
-                "Название изделия:\n"
-                "Цвет изделия:\n"
-                "Количество (шт):\n"
-                "Склады и размеры:\n"
-                "Дата отправки (дд/мм/гггг):\n"
-                "Дата возможного прибытия (дд/мм/гггг):\n\n"
-                "💡 Примеры строгого формата:\n\n"
-                "🔹 Один склад:\n"
-                "рубашка\n"
-                "красный\n"
-                "100\n"
-                "Казань: S-50 M-25 L-25\n"
-                "12.12.2021\n"
-                "15/12/2021\n\n"
-                "🔹 Несколько складов:\n"
-                "рубашка\n"
-                "синий\n"
-                "200\n"
-                "Казань: S-30 M-40 , Москва: L-50 XL-80\n"
-                "12.12.2021\n"
-                "15/12/2021\n\n"
-                "📝 Формат складов и размеров:\n"
-                "• Один склад: Склад: размер-количество размер-количество\n"
-                "• Несколько складов: Склад1: размеры , Склад2: размеры\n"
-                "• Разделитель складов: , (запятая)\n"
-                "• Разделитель размеров: - (дефис)\n"
-                "• Поддерживаются размеры: XS, S, M, L, XL, 2XL, 3XL, 4XL, 5XL, 6XL, 7XL\n\n"
+                "\"Привет! красныe рубашки, 100 штук, Казань: 50S, 25M, 25L. 12/12/2025 - 15/12/2025.\"\n\n"
+
                 "Нажмите /cancel для отмены заполнения."
             )
         else:
@@ -288,8 +261,15 @@ def setup_save_handler(bot: TeleBot):
                     openai_success = True
                     total_amount_str = str(total_amount)
                 else:
-                    logger.warning(f"OpenAI parsing failed: {error_msg}")
-                    bot.reply_to(message, f"🤖 ИИ не смог обработать запрос: {error_msg}\n\n📋 Попробую обработать как строгий формат...")
+                    # Check if we have partial data to generate a friendly request
+                    if parsed_data and any(parsed_data.values()):
+                        # Generate friendly missing data request
+                        friendly_request = openai_parser.generate_missing_data_request(message.text, parsed_data)
+                        bot.reply_to(message, friendly_request)
+                        return
+                    else:
+                        logger.warning(f"OpenAI parsing failed: {error_msg}")
+                        bot.reply_to(message, f"🤖 Не удалось обработать запрос через ИИ\n\n📋 Попробую обработать как строгий формат...")
             
             # Fall back to strict format parsing if OpenAI failed or is disabled
             if not openai_success:
@@ -385,11 +365,28 @@ def setup_save_handler(bot: TeleBot):
             else:
                 estimated_arrival = standardize_date(estimated_arrival_str)
 
-            # If there are validation errors, send them back
+            # If there are validation errors, generate friendly message using OpenAI
             if errors:
-                error_message = "❌ Найдены следующие ошибки:\n\n" + "\n".join(errors)
-                error_message += "\n\nПожалуйста, исправьте ошибки и отправьте данные заново."
-                bot.reply_to(message, error_message)
+                if OPENAI_ENABLED and openai_success:
+                    # Create partial data with what we successfully extracted
+                    partial_data_for_errors = {
+                        'product_name': product_name if product_name else None,
+                        'product_color': product_color if product_color else None,
+                        'total_amount': total_amount if 'total_amount' in locals() else None,
+                        'warehouse_sizes': warehouse_sizes_str if warehouse_sizes_str else None,
+                        'shipment_date': shipment_date_str if shipment_date_str else None,
+                        'estimated_arrival': estimated_arrival_str if estimated_arrival_str else None
+                    }
+                    
+                    # Generate friendly validation error message
+                    validation_prompt = f"Пользователь ввёл данные, но есть проблемы с валидацией: {'; '.join(errors)}. Сгенерируй дружелюбное сообщение с просьбой исправить данные."
+                    friendly_validation_msg = openai_parser.generate_missing_data_request(validation_prompt, partial_data_for_errors)
+                    bot.reply_to(message, friendly_validation_msg)
+                else:
+                    # Fallback to standard error message
+                    error_message = "❌ Найдены следующие ошибки:\n\n" + "\n".join(errors)
+                    error_message += "\n\nПожалуйста, исправьте ошибки и отправьте данные заново."
+                    bot.reply_to(message, error_message)
                 return
 
             # If validation passed, save the data

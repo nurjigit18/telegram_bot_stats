@@ -40,7 +40,7 @@ class OpenAIParser:
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.1,  # Low temperature for consistent parsing
-                max_tokens=1000,
+                max_completion_tokens=1000,  # Fixed: changed from max_tokens
                 timeout=30
             )
             
@@ -56,11 +56,11 @@ class OpenAIParser:
                 
                 if not all(field in parsed_data for field in required_fields):
                     missing_fields = [f for f in required_fields if f not in parsed_data]
-                    return False, None, f"Missing required fields: {', '.join(missing_fields)}"
+                    return False, parsed_data, f"Missing required fields: {', '.join(missing_fields)}"
                 
                 # Additional validation
-                if not isinstance(parsed_data['total_amount'], int) or parsed_data['total_amount'] <= 0:
-                    return False, None, "Total amount must be a positive integer"
+                if parsed_data.get('total_amount') and (not isinstance(parsed_data['total_amount'], int) or parsed_data['total_amount'] <= 0):
+                    return False, parsed_data, "Total amount must be a positive integer"
                 
                 return True, parsed_data, None
                 
@@ -71,6 +71,40 @@ class OpenAIParser:
         except Exception as e:
             logger.error(f"OpenAI API error: {str(e)}")
             return False, None, f"OpenAI API error: {str(e)}"
+
+    def generate_missing_data_request(self, user_input: str, partial_data: Optional[Dict] = None) -> str:
+        """
+        Generate a friendly request for missing data using OpenAI
+        
+        Args:
+            user_input: Original user input
+            partial_data: Partially extracted data (if any)
+            
+        Returns:
+            Friendly message asking for missing information
+        """
+        if not OPENAI_ENABLED:
+            return "Пожалуйста, предоставьте недостающую информацию."
+        
+        try:
+            prompt = self._create_missing_data_prompt(user_input, partial_data)
+            
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": self._get_missing_data_system_prompt()},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,  # Slightly higher temperature for more natural responses
+                max_completion_tokens=500,  # Fixed: changed from max_tokens
+                timeout=30
+            )
+            
+            return response.choices[0].message.content.strip()
+            
+        except Exception as e:
+            logger.error(f"Error generating missing data request: {str(e)}")
+            return "Не могли бы вы предоставить дополнительную информацию о товаре?"
     
     def _get_system_prompt(self) -> str:
         """Get the system prompt for OpenAI"""
@@ -114,6 +148,56 @@ Examples of warehouse_sizes format:
 - Multiple warehouses: "Казань: S-30 M-40 , Москва: L-50 XL-80"
 
 Extract the information and respond with JSON only."""
+
+    def _get_missing_data_system_prompt(self) -> str:
+        """Get the system prompt for generating missing data requests"""
+        return """Ты дружелюбный помощник склада, который помогает пользователям заполнить данные о товарах. 
+
+Твоя задача - вежливо попросить недостающую информацию, используя тёплый и естественный тон на русском языке.
+
+Избегай слов: "ошибка", "неверно", "неправильно", "проблема"
+Используй: "подскажите", "не могли бы вы", "помогите понять", "уточните пожалуйста"
+
+Нужные поля:
+- Название товара
+- Цвет товара  
+- Общее количество (число)
+- Склады и размеры (формат: "Склад: размер-количество")
+- Дата отправки (дд/мм/гггг)
+- Дата прибытия (дд/мм/гггг)
+
+Отвечай коротко и по делу, максимум 2-3 предложения."""
+
+    def _create_missing_data_prompt(self, user_input: str, partial_data: Optional[Dict] = None) -> str:
+        """Create prompt for generating missing data request"""
+        extracted_info = ""
+        if partial_data:
+            extracted_parts = []
+            if partial_data.get('product_name'):
+                extracted_parts.append(f"товар: {partial_data['product_name']}")
+            if partial_data.get('product_color'):
+                extracted_parts.append(f"цвет: {partial_data['product_color']}")
+            if partial_data.get('total_amount'):
+                extracted_parts.append(f"количество: {partial_data['total_amount']}")
+            if partial_data.get('warehouse_sizes'):
+                extracted_parts.append(f"склады: {partial_data['warehouse_sizes']}")
+            if partial_data.get('shipment_date'):
+                extracted_parts.append(f"дата отправки: {partial_data['shipment_date']}")
+            if partial_data.get('estimated_arrival'):
+                extracted_parts.append(f"дата прибытия: {partial_data['estimated_arrival']}")
+            
+            if extracted_parts:
+                extracted_info = f"Уже понял: {', '.join(extracted_parts)}"
+
+        return f"""Пользователь написал: "{user_input}"
+
+{extracted_info}
+
+Сгенерируй дружелюбное сообщение на русском языке, попросив недостающую информацию для сохранения товара на складе. 
+
+Нужны все поля: название товара, цвет, количество, склады и размеры, дата отправки, дата прибытия.
+
+Используй эмодзи и тёплый тон."""
 
 # Global instance
 openai_parser = OpenAIParser()
