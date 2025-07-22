@@ -171,7 +171,7 @@ def setup_save_handler(bot: TeleBot):
         user_data.set_current_action(user_id, "saving_new_single")
         user_data.initialize_form_data(user_id)
 
-        # Send sample format with natural language support info
+        # Add bot's instruction message to context
         if OPENAI_ENABLED:
             sample_format = (
                 "🤖 Теперь вы можете вводить данные в свободной форме!\n\n"
@@ -213,6 +213,12 @@ def setup_save_handler(bot: TeleBot):
                 "• Поддерживаются размеры: XS, S, M, L, XL, 2XL, 3XL, 4XL, 5XL, 6XL, 7XL\n\n"
                 "Нажмите /cancel для отмены заполнения."
             )
+        
+        # Add the /save command to context
+        user_data.add_message_to_context(user_id, "user", "/save")
+        # Add bot's response to context
+        user_data.add_message_to_context(user_id, "assistant", sample_format)
+        
         bot.reply_to(message, sample_format)
 
     @bot.message_handler(func=lambda message:
@@ -228,13 +234,19 @@ def setup_save_handler(bot: TeleBot):
 
         user_id = message.from_user.id
         
+        # Add user's message to context
+        user_data.add_message_to_context(user_id, "user", message.text)
+        
         try:
             # Try OpenAI parsing first if enabled
             openai_success = False
             if OPENAI_ENABLED:
-                bot.reply_to(message, "🤖 Обрабатываю ваш запрос с помощью ИИ...")
+                processing_msg = "🤖 Обрабатываю ваш запрос с помощью ИИ..."
+                bot.reply_to(message, processing_msg)
+                # Add bot's processing message to context
+                user_data.add_message_to_context(user_id, "assistant", processing_msg)
                 
-                success, parsed_data, error_msg = openai_parser.parse_product_data(message.text)
+                success, parsed_data, error_msg = openai_parser.parse_product_data(message.text, user_id=user_id)
                 
                 if success and parsed_data:
                     # Extract data from OpenAI response
@@ -257,6 +269,8 @@ def setup_save_handler(bot: TeleBot):
                         "✅ Проверяю данные..."
                     )
                     bot.reply_to(message, confirmation_msg)
+                    # Add confirmation message to context
+                    user_data.add_message_to_context(user_id, "assistant", confirmation_msg)
                     
                     openai_success = True
                     total_amount_str = str(total_amount)
@@ -266,10 +280,15 @@ def setup_save_handler(bot: TeleBot):
                         # Generate friendly missing data request
                         friendly_request = openai_parser.generate_missing_data_request(message.text, parsed_data)
                         bot.reply_to(message, friendly_request)
+                        # Add friendly request to context
+                        user_data.add_message_to_context(user_id, "assistant", friendly_request)
                         return
                     else:
                         logger.warning(f"OpenAI parsing failed: {error_msg}")
-                        bot.reply_to(message, f"🤖 Не удалось обработать запрос через ИИ\n\n📋 Попробую обработать как строгий формат...")
+                        fallback_msg = f"🤖 Не удалось обработать запрос через ИИ\n\n📋 Попробую обработать как строгий формат..."
+                        bot.reply_to(message, fallback_msg)
+                        # Add fallback message to context
+                        user_data.add_message_to_context(user_id, "assistant", fallback_msg)
             
             # Fall back to strict format parsing if OpenAI failed or is disabled
             if not openai_success:
@@ -304,6 +323,8 @@ def setup_save_handler(bot: TeleBot):
                             "6. Дата возможного прибытия"
                         )
                     bot.reply_to(message, error_msg)
+                    # Add error message to context
+                    user_data.add_message_to_context(user_id, "assistant", error_msg)
                     return
 
                 # Extract and validate each field
@@ -382,11 +403,15 @@ def setup_save_handler(bot: TeleBot):
                     validation_prompt = f"Пользователь ввёл данные, но есть проблемы с валидацией: {'; '.join(errors)}. Сгенерируй дружелюбное сообщение с просьбой исправить данные."
                     friendly_validation_msg = openai_parser.generate_missing_data_request(validation_prompt, partial_data_for_errors)
                     bot.reply_to(message, friendly_validation_msg)
+                    # Add validation error message to context
+                    user_data.add_message_to_context(user_id, "assistant", friendly_validation_msg)
                 else:
                     # Fallback to standard error message
                     error_message = "❌ Найдены следующие ошибки:\n\n" + "\n".join(errors)
                     error_message += "\n\nПожалуйста, исправьте ошибки и отправьте данные заново."
                     bot.reply_to(message, error_message)
+                    # Add error message to context
+                    user_data.add_message_to_context(user_id, "assistant", error_message)
                 return
 
             # If validation passed, save the data
@@ -444,8 +469,11 @@ def setup_save_handler(bot: TeleBot):
                 f"Создано записей: {saved_records}"
             )
             bot.reply_to(message, confirmation_msg)
+            
+            # Add success message to context
+            user_data.add_message_to_context(user_id, "assistant", confirmation_msg)
 
-            # Clear user data after successful completion
+            # Clear user data after successful completion (this also clears context)
             user_data.clear_user_data(user_id)
 
         except Exception as e:

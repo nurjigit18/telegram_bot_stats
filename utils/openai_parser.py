@@ -17,12 +17,14 @@ class OpenAIParser:
             self.client = None
             logger.warning("OpenAI API key not configured. OpenAI parsing will be disabled.")
     
-    def parse_product_data(self, user_input: str) -> Tuple[bool, Optional[Dict], Optional[str]]:
+    def parse_product_data(self, user_input: str, user_id: Optional[int] = None, conversation_context: Optional[list] = None) -> Tuple[bool, Optional[Dict], Optional[str]]:
         """
         Parse natural language input to extract product data
         
         Args:
             user_input: Natural language text from user
+            user_id: User ID for context retrieval (optional)
+            conversation_context: Pre-provided conversation context (optional)
             
         Returns:
             Tuple of (success, parsed_data_dict, error_message)
@@ -31,14 +33,25 @@ class OpenAIParser:
             return False, None, "OpenAI API not configured"
         
         try:
+            # Build messages array with context
+            messages = [{"role": "system", "content": self._get_system_prompt()}]
+            
+            # Add conversation context if available
+            if conversation_context:
+                messages.extend(conversation_context)
+            elif user_id:
+                # Import here to avoid circular imports
+                from models.user_data import user_data
+                context_messages = user_data.get_context_messages(user_id)
+                messages.extend(context_messages)
+            
+            # Add current user input
             prompt = self._create_parsing_prompt(user_input)
+            messages.append({"role": "user", "content": prompt})
             
             response = self.client.chat.completions.create(
                 model=self.model,
-                messages=[
-                    {"role": "system", "content": self._get_system_prompt()},
-                    {"role": "user", "content": prompt}
-                ],
+                messages=messages,
                 temperature=0.1,  # Low temperature for consistent parsing
                 max_completion_tokens=1000,  # Fixed: changed from max_tokens
                 timeout=30

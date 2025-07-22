@@ -184,6 +184,14 @@ def memory_monitor():
             #     state.running = False
             #     break
 
+            # Clean up expired user contexts periodically
+            try:
+                from models.user_data import user_data
+                user_data.cleanup_all_expired_contexts()
+                logger.debug("Cleaned up expired user contexts")
+            except Exception as context_error:
+                logger.error(f"Error cleaning up contexts: {context_error}")
+
             # Force garbage collection to reduce memory usage
             collected = gc.collect()
             if collected > 0:
