@@ -10,3 +10,5 @@ utils__pycache__/
 /utils/spheric-keel-430513-g9-f3948761d754.json
 /sheets.json
 /test_openai_integration.py
+/bot_data.db
+/heartbeat.txt

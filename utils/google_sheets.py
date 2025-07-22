@@ -35,12 +35,20 @@ class GoogleSheetsManager:
             scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
 
             # Retrieve credentials from environment variable
-            creds_json = os.getenv('GOOGLE_CREDS_JSON')
-            if not creds_json:
+            creds_data = os.getenv('GOOGLE_CREDS_JSON')
+            if not creds_data:
                 raise ValueError("Environment variable 'GOOGLE_CREDS_JSON' is not set.")
 
-            # Parse JSON string into a dictionary
-            creds_dict = json.loads(creds_json)
+            # Handle both file path (local) and JSON string (production)
+            if os.path.isfile(creds_data):
+                # Local development: read from file
+                with open(creds_data, 'r') as f:
+                    creds_dict = json.load(f)
+                logger.info("Loaded Google credentials from file (local development)")
+            else:
+                # Production: parse JSON string directly
+                creds_dict = json.loads(creds_data)
+                logger.info("Loaded Google credentials from environment variable (production)")
 
             # Create credentials from the dictionary
             credentials = Credentials.from_service_account_info(creds_dict, scopes=scope)
@@ -88,13 +96,19 @@ def connect_to_google_sheets():
     ]
 
     # Retrieve credentials from environment variable
-    creds_json = os.getenv('GOOGLE_CREDS_JSON')
-    if not creds_json:
+    creds_data = os.getenv('GOOGLE_CREDS_JSON')
+    if not creds_data:
         raise ValueError("Environment variable 'GOOGLE_CREDS_JSON' is not set.")
 
     try:
-        # Parse JSON string into a dictionary
-        creds_dict = json.loads(creds_json)
+        # Handle both file path (local) and JSON string (production)
+        if os.path.isfile(creds_data):
+            # Local development: read from file
+            with open(creds_data, 'r') as f:
+                creds_dict = json.load(f)
+        else:
+            # Production: parse JSON string directly
+            creds_dict = json.loads(creds_data)
 
         # Create credentials from the dictionary
         creds = Credentials.from_service_account_info(creds_dict, scopes=scope)
