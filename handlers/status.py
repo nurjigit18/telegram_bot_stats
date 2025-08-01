@@ -2,6 +2,7 @@ from telebot import TeleBot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from models.user_data import user_data
 from utils.google_sheets import GoogleSheetsManager
+from handlers.edit import get_size_column_mapping
 import logging
 from config import ADMIN_USER_USERNAMES
 from utils.keyboards import show_product_selection
@@ -212,10 +213,20 @@ def setup_status_handler(bot: TeleBot):
             record = sheets_manager.get_main_worksheet().row_values(row_index)
 
             # Check if status is empty
-            status = record[11] if len(record) > 11 and record[11] else "Статус не установлен"
+            status = record[22] if len(record) > 22 and record[22] else "Статус не установлен"
 
             # Get sizes from column 10 (previously scattered across multiple columns)
-            sizes_data = record[10] if len(record) > 10 else "Не указано"
+            size_columns = get_size_column_mapping()
+            size_info = []
+            total_sizes = 0
+            for size, col_num in size_columns.items():
+                if col_num < len(record) and record[col_num]:
+                    amount = int(record[col_num] or 0)
+                    if amount > 0:
+                        size_info.append(f"{size}: {amount}")
+                        total_sizes += amount
+            
+            size_display = ", ".join(size_info) if size_info else "Не указано"
 
             status_message = (
                 f"📦 Информация о заказе:\n\n"
@@ -226,7 +237,7 @@ def setup_status_handler(bot: TeleBot):
                 f"Фактическая дата прибытия: {record[6] or 'Не указано'}\n"
                 f"Склад: {record[9]}\n"
                 f"Общее количество: {record[8]} шт\n"
-                f"Размеры: {sizes_data}\n"
+                f"Размеры: {size_display}\n"
                 f"Статус: {status}"
             )
 
