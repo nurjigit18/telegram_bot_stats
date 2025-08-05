@@ -73,7 +73,6 @@ class GoogleSheetsManager:
                 # Add headers
                 self.users_worksheet.update('A1:C1', [['chat_id', 'username', 'registration_date']])
 
-            logger.info(f"Connected to Google Sheet with ID: {sheet_id}")
         except Exception as e:
             logger.error(f"Failed to connect to Google Sheets: {str(e)}")
             raise

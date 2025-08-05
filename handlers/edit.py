@@ -10,7 +10,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Pagination settings
-ITEMS_PER_PAGE = 5  # Number of items to show per page
+ITEMS_PER_PAGE = 10  # Number of items to show per page
 
 def parse_new_size_format(size_input):
     """

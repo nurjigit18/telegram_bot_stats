@@ -346,61 +346,12 @@ def setup_announcement_handlers(bot: TeleBot):
         if not user_data.has_user(user_id):
             user_data.initialize_user(user_id)
 
-        try:
-            sheets_manager = GoogleSheetsManager.get_instance()
-            users_worksheet = sheets_manager.get_users_worksheet()
-            users_data = users_worksheet.get_all_values()
+        # Set current action (optional, but helps track context)
+        user_data.set_current_action(user_id, "announcing_to_individual")
 
-            if len(users_data) <= 1:  # Only headers
-                bot.edit_message_text(
-                    "Нет доступных пользователей для отправки сообщения.",
-                    call.message.chat.id,
-                    call.message.message_id
-                )
-                return
+        # Show page 1 of user list
+        show_user_list_page(call.message.chat.id, call.message.message_id, page=1)
 
-            options = []  # List to store user options
-
-            # Skip header
-            for i, user_row in enumerate(users_data[1:], start=2):
-                if len(user_row) >= 2:
-                    user_id = user_row[0]
-                    username = user_row[1]
-                    first_name = user_row[2] if len(user_row) > 2 else ""
-
-                    display_name = username
-                    if first_name:
-                        display_name = f"{first_name} (@{username})"
-                    elif username == "Unknown":
-                        display_name = f"User {user_id[:4]}..."
-
-                    options.append((display_name, f"user_{user_id}"))
-                else:
-                    logger.warning(f"Skipping row {i+1} due to insufficient data: {user_row}")
-
-            if not options:
-                bot.edit_message_text(
-                    "Нет доступных пользователей для отправки сообщения.",
-                    call.message.chat.id,
-                    call.message.message_id
-                )
-                return
-            # Generate menu with user options
-            markup = create_menu(options, back_callback="admin_new_announce")
-
-            bot.edit_message_text(
-                "Выберите пользователя для отправки сообщения:",
-                call.message.chat.id,
-                call.message.message_id,
-                reply_markup=markup
-            )
-        except Exception as e:
-            logger.error(f"Error fetching users: {str(e)}")
-            bot.edit_message_text(
-                "❌ Ошибка при получении списка пользователей. Попробуйте позже.",
-                call.message.chat.id,
-                call.message.message_id
-            )
 
     @bot.callback_query_handler(func=lambda call: call.data.startswith("user_"))
     def handle_user_selection(call):
@@ -540,3 +491,83 @@ def setup_announcement_handlers(bot: TeleBot):
         if user_data.has_user(user_id):
             user_data.clear_user_data(user_id)  # Clear user data
         bot.send_message(call.message.chat.id, "Операция отменена.")
+        
+    def show_user_list_page(chat_id, message_id, page):
+        try:
+            sheets_manager = GoogleSheetsManager.get_instance()
+            users_worksheet = sheets_manager.get_users_worksheet()
+            users_data = users_worksheet.get_all_values()
+
+            if len(users_data) <= 1:
+                bot.edit_message_text("Нет доступных пользователей для отправки сообщения.",
+                                    chat_id, message_id)
+                return
+
+            users_per_page = 9
+            total_users = len(users_data) - 1  # Exclude header
+            total_pages = (total_users + users_per_page - 1) // users_per_page
+
+            # Bounds
+            page = max(1, min(page, total_pages))
+
+            start_index = (page - 1) * users_per_page + 1
+            end_index = min(start_index + users_per_page, len(users_data))
+
+            options = []
+            for user_row in users_data[start_index:end_index]:
+                if len(user_row) >= 2:
+                    user_id = user_row[0]
+                    username = user_row[1]
+                    first_name = user_row[2] if len(user_row) > 2 else ""
+                    display_name = f"{first_name} (@{username})" if first_name else f"@{username}"
+                    options.append((display_name, f"user_{user_id}"))
+
+            markup = InlineKeyboardMarkup()
+            for text, callback_data in options:
+                markup.add(InlineKeyboardButton(text, callback_data=callback_data))
+
+            # Navigation buttons
+            # Pagination row with Prev - Page X of Y - Next
+            nav_buttons = []
+
+            if page > 1:
+                nav_buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"notify_users_page_{page - 1}"))
+
+            # Add a center button for page indicator (non-clickable)
+            nav_buttons.append(InlineKeyboardButton(f"📄 {page} из {total_pages}", callback_data="noop_page"))
+
+            if page < total_pages:
+                nav_buttons.append(InlineKeyboardButton("➡️ Далее", callback_data=f"notify_users_page_{page + 1}"))
+
+            markup.row(*nav_buttons)
+
+
+            # Back to main menu
+            markup.row(InlineKeyboardButton("⬅️ Прошлое меню", callback_data="admin_new_announce"))
+
+            # Cancel button
+            markup.row(InlineKeyboardButton("❌ Отмена", callback_data="cancel_edit"))
+
+            # Add "Page X of Y" at the top of the message
+            bot.edit_message_text(
+                f"👤 Выберите пользователя для отправки сообщения:",
+                chat_id,
+                message_id,
+                reply_markup=markup
+            )
+
+        except Exception as e:
+            logger.error(f"Error showing paginated users: {str(e)}")
+            bot.edit_message_text("❌ Ошибка при получении списка пользователей. Попробуйте позже.",
+                                chat_id, message_id)
+
+            
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("notify_users_page_"))
+    def handle_user_pagination(call):
+        bot.answer_callback_query(call.id)
+        try:
+            page = int(call.data.split("_")[-1])
+            show_user_list_page(call.message.chat.id, call.message.message_id, page)
+        except Exception as e:
+            logger.error(f"Error in pagination handler: {e}")
+            bot.send_message(call.message.chat.id, "❌ Ошибка при переключении страниц.")

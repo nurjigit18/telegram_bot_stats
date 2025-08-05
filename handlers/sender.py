@@ -7,6 +7,8 @@ from utils.google_sheets import GoogleSheetsManager
 from models.user_data import user_data
 import pytz
 
+ITEMS_PER_PAGE = 9  # Number of items to show per page
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -18,6 +20,8 @@ logger = logging.getLogger(__name__)
 payment_status = {}
 # Track users who clicked the "Отправить чек" button and can send files
 ready_to_send_file = {}
+# Track pending files waiting for confirmation
+pending_files = {}
 
 def setup_file_sender_handlers(bot):
     """
@@ -74,18 +78,15 @@ def setup_file_sender_handlers(bot):
         keyboard.add(send_receipt_button)
         
         # Send message with bank account details and the button
-        bank_details = ("Реквизиты для оплаты:\n\n"
-                        "Mbank: 1234567890\n"
-                        "Optima Bank: Example Bank\n"
-                        "Demir Bank: Example Company")
+        bank_details = ("Реквизиты для оплаты💸:\n\n"
+                        "Mbank: 0703268727\n"
+                        "Optima Bank: 0703268726\n"
+                        )
         bot.send_message(
             message.chat.id,
-            f"{bank_details}\n\nНажмите кнопку ниже, чтобы отправить чек об оплате.",
+            f"{bank_details}\n\nНажмите кнопку ниже, чтобы отправить чек 🧾 об оплате.",
             reply_markup=keyboard
         )
-        
-        # Notify admins that a new user has registered for payments
-        # notify_admins(bot, f"Пользователь {username} (ID: {user_id}) зарегистрировался для платежей.")
 
     @bot.callback_query_handler(func=lambda call: call.data == "send_receipt")
     def send_receipt_callback(call):
@@ -110,7 +111,7 @@ def setup_file_sender_handlers(bot):
 
     @bot.message_handler(content_types=['photo', 'document'])
     def handle_file(message):
-        """Handle files sent by users and forward them to admins"""
+        """Handle files sent by users and show confirmation buttons"""
         user_id = message.from_user.id
         username = message.from_user.username or f"{message.from_user.first_name} {message.from_user.last_name or ''}".strip()
         
@@ -132,82 +133,226 @@ def setup_file_sender_handlers(bot):
             )
             return
         
-        # Get admin IDs
-        admin_ids = get_admin_ids()
-        if not admin_ids:
-            bot.reply_to(message, "Нет настроенных администраторов для получения вашего файла. Пожалуйста, свяжитесь с поддержкой.")
+        # Store the file information for confirmation
+        file_info = {
+            'message': message,
+            'user_id': user_id,
+            'username': username,
+            'timestamp': datetime.now(pytz.timezone('Asia/Bishkek')).strftime("%Y-%m-%d %H:%M:%S"),
+            'file_type': 'photo' if message.photo else 'document'
+        }
+        
+        # Store with unique key (user_id + timestamp)
+        file_key = f"{user_id}_{int(datetime.now().timestamp())}"
+        pending_files[file_key] = file_info
+        
+        # Create confirmation keyboard
+        keyboard = InlineKeyboardMarkup()
+        confirm_button = InlineKeyboardButton(
+            text="✅ Отправить менеджеру", 
+            callback_data=f"confirm_file_{file_key}"
+        )
+        cancel_button = InlineKeyboardButton(
+            text="❌ Отменить", 
+            callback_data=f"cancel_file_{file_key}"
+        )
+        keyboard.add(confirm_button, cancel_button)
+        
+        # Determine file type and size for confirmation message
+        if message.photo:
+            file_description = "📸 Фотография"
+        else:
+            file_name = message.document.file_name or "документ"
+            file_size = message.document.file_size
+            if file_size:
+                file_size_mb = file_size / (1024 * 1024)
+                file_description = f"📄 {file_name} ({file_size_mb:.1f} МБ)"
+            else:
+                file_description = f"📄 {file_name}"
+        
+        caption_text = f"\n📝 Подпись: {message.caption}" if message.caption else ""
+        
+        # Send confirmation message
+        confirmation_text = (
+            f"Получен файл:\n"
+            f"{file_description}{caption_text}\n\n"
+            f"Отправить этот чек менеджеру для проверки?"
+        )
+        
+        bot.send_message(
+            message.chat.id,
+            confirmation_text,
+            reply_markup=keyboard
+        )
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("confirm_file_"))
+    def confirm_file_callback(call):
+        """Handle file confirmation"""
+        user_id = call.from_user.id
+        file_key = call.data.replace("confirm_file_", "")
+        
+        # Answer the callback
+        bot.answer_callback_query(call.id)
+        
+        # Check if file still exists in pending
+        if file_key not in pending_files:
+            bot.edit_message_text(
+                "❌ Файл больше не доступен. Попробуйте отправить его заново.",
+                call.message.chat.id,
+                call.message.message_id
+            )
             return
         
-        # Track this file submission in Google Sheets
-        try:
-            # Create a new worksheet for file tracking if it doesn't exist
-            sheets_manager = GoogleSheetsManager.get_instance()
-            try:
-                files_worksheet = sheets_manager._spreadsheet.worksheet("Files")
-            except:
-                # Create the worksheet
-                files_worksheet = sheets_manager._spreadsheet.add_worksheet("Files", 1000, 5)
-                # Add headers
-                files_worksheet.update('A1:E1', [['timestamp', 'user_id', 'username', 'file_type', 'caption']])
-            
-            # Determine file type
-            file_type = "photo" if message.photo else "document"
-            if file_type == "document" and message.document.mime_type:
-                file_type = message.document.mime_type
-            
-            # Add file record
-            timestamp = datetime.now(pytz.timezone('Asia/Bishkek')).strftime("%Y-%m-%d %H:%M:%S")
-            caption = message.caption or ""
-            
-            files_worksheet.append_row([
-                timestamp,
-                str(user_id),
-                username,
-                file_type,
-                caption
-            ])
-            
-            logger.info(f"Tracked file submission from {username} (ID: {user_id})")
-        except Exception as e:
-            logger.error(f"Failed to track file in Google Sheets: {str(e)}")
+        file_info = pending_files[file_key]
+        message = file_info['message']
+        username = file_info['username']
         
-        # Get user info for the forwarding message
-        user_info = f"Файл получен от {username} (ID: {user_id})"
+        # Process the file
+        success = process_and_forward_file(bot, message, user_id, username)
         
-        # Send the file to all admins
-        success_count = 0
-        for admin_id in admin_ids:
-            try:
-                # Forward with custom caption including original caption and user info
-                original_caption = message.caption or ""
-                new_caption = f"{original_caption}\n\n{user_info}"
-                
-                if len(new_caption) > 1024:  # Telegram caption limit
-                    new_caption = new_caption[:1021] + "..."
-                
-                if message.photo:
-                    bot.send_photo(
-                        chat_id=admin_id,
-                        photo=message.photo[-1].file_id,
-                        caption=new_caption
-                    )
-                    success_count += 1
-                elif message.document:
-                    bot.send_document(
-                        chat_id=admin_id,
-                        document=message.document.file_id,
-                        caption=new_caption
-                    )
-                    success_count += 1
-            except Exception as e:
-                logger.error(f"Failed to send file to admin {admin_id}: {e}")
-        
-        if success_count > 0:
-            bot.reply_to(message, "Ваш чек был успешно отправлен менеджеру. Спасибо!")
+        if success:
+            # Update the confirmation message
+            bot.edit_message_text(
+                "✅ Ваш чек был успешно отправлен менеджеру. Спасибо!",
+                call.message.chat.id,
+                call.message.message_id
+            )
             # Reset the ready_to_send_file status after successful submission
             ready_to_send_file[user_id] = False
         else:
-            bot.reply_to(message, "Не удалось отправить ваш файл. Пожалуйста, повторите попытку позже или обратитесь в службу поддержки.")
+            bot.edit_message_text(
+                "❌ Не удалось отправить ваш файл. Пожалуйста, повторите попытку позже.",
+                call.message.chat.id,
+                call.message.message_id
+            )
+        
+        # Clean up pending file
+        del pending_files[file_key]
+
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("cancel_file_"))
+    def cancel_file_callback(call):
+        """Handle file cancellation"""
+        file_key = call.data.replace("cancel_file_", "")
+        
+        # Answer the callback
+        bot.answer_callback_query(call.id)
+        
+        # Update the message
+        bot.edit_message_text(
+            "❌ Отправка файла отменена. Вы можете отправить другой файл.",
+            call.message.chat.id,
+            call.message.message_id
+        )
+        
+        # Clean up pending file if it exists
+        if file_key in pending_files:
+            del pending_files[file_key]
+
+    # Handle text messages to prevent confusion
+    @bot.message_handler(content_types=['text'])
+    def handle_text_when_expecting_file(message):
+        """Handle text messages from users who might be expecting to send files"""
+        user_id = message.from_user.id
+        
+        # Skip if it's a command (handled by other handlers)
+        if message.text.startswith('/'):
+            return
+        
+        # If user is ready to send files but sent text instead
+        if (user_id in ready_to_send_file and 
+            ready_to_send_file[user_id] and 
+            user_id in payment_status and 
+            payment_status[user_id]['status']):
+            
+            bot.reply_to(
+                message, 
+                "Я ожидаю получить фотографию или документ с чеком. "
+                "Пожалуйста, отправьте файл, а не текстовое сообщение."
+            )
+
+def process_and_forward_file(bot, message, user_id, username):
+    """
+    Process the file and forward it to admins
+    
+    Args:
+        bot: The TeleBot instance
+        message: The message containing the file
+        user_id: User ID
+        username: Username
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    # Get admin IDs
+    admin_ids = get_admin_ids()
+    if not admin_ids:
+        return False
+    
+    # Track this file submission in Google Sheets
+    try:
+        # Create a new worksheet for file tracking if it doesn't exist
+        sheets_manager = GoogleSheetsManager.get_instance()
+        try:
+            files_worksheet = sheets_manager._spreadsheet.worksheet("Files")
+        except:
+            # Create the worksheet
+            files_worksheet = sheets_manager._spreadsheet.add_worksheet("Files", 1000, 5)
+            # Add headers
+            files_worksheet.update('A1:E1', [['timestamp', 'user_id', 'username', 'file_type', 'caption']])
+        
+        # Determine file type
+        file_type = "photo" if message.photo else "document"
+        if file_type == "document" and message.document.mime_type:
+            file_type = message.document.mime_type
+        
+        # Add file record
+        timestamp = datetime.now(pytz.timezone('Asia/Bishkek')).strftime("%Y-%m-%d %H:%M:%S")
+        caption = message.caption or ""
+        
+        files_worksheet.append_row([
+            timestamp,
+            str(user_id),
+            username,
+            file_type,
+            caption
+        ])
+        
+        logger.info(f"Tracked file submission from {username} (ID: {user_id})")
+    except Exception as e:
+        logger.error(f"Failed to track file in Google Sheets: {str(e)}")
+    
+    # Get user info for the forwarding message
+    user_info = f"Файл получен от {username} (ID: {user_id})"
+    
+    # Send the file to all admins
+    success_count = 0
+    for admin_id in admin_ids:
+        try:
+            # Forward with custom caption including original caption and user info
+            original_caption = message.caption or ""
+            new_caption = f"{original_caption}\n\n{user_info}"
+            
+            if len(new_caption) > 1024:  # Telegram caption limit
+                new_caption = new_caption[:1021] + "..."
+            
+            if message.photo:
+                bot.send_photo(
+                    chat_id=admin_id,
+                    photo=message.photo[-1].file_id,
+                    caption=new_caption
+                )
+                success_count += 1
+            elif message.document:
+                bot.send_document(
+                    chat_id=admin_id,
+                    document=message.document.file_id,
+                    caption=new_caption
+                )
+                success_count += 1
+        except Exception as e:
+            logger.error(f"Failed to send file to admin {admin_id}: {e}")
+    
+    return success_count > 0
 
 def notify_admins(bot, message_text):
     """
@@ -232,7 +377,7 @@ def get_admin_ids():
         list: List of admin user IDs as integers
     """
     # Get admin IDs from environment variable
-    admin_ids_str = os.getenv('ADMIN_1', 'ADMIN_2', 'ADMIN_3')
+    admin_ids_str = os.getenv('ADMIN_1', 'ADMIN_2')
     admin_ids = []
     
     # Parse admin IDs
