@@ -231,6 +231,7 @@ def setup_edit_handler(bot: TeleBot):
             logger.error(f"Error handling edit command: {str(e)}")
             bot.reply_to(message, "❌ Произошла ошибка при получении списка записей.")
 
+    # Helper function that should already exist but making sure it's available
     def show_record_selection_menu_paginated(bot, chat_id, user_records, page, message_id=None):
         """Helper function to show the paginated record selection menu"""
         total_items = len(user_records)
@@ -251,7 +252,6 @@ def setup_edit_handler(bot: TeleBot):
         for idx, record in page_records:
             product_name = record[3] if len(record) > 3 else "Unknown"
             product_color = record[7] if len(record) > 7 else "Unknown"
-            shipment_date = record[4] if len(record) > 4 else "Unknown"
             warehouse_name = record[9] if len(record) > 9 else "Unknown"
             button_text = f"({warehouse_name}) {product_name} - {product_color}"
             markup.add(InlineKeyboardButton(
@@ -348,6 +348,7 @@ def setup_edit_handler(bot: TeleBot):
             logger.error(f"Error handling cancel edit operation: {str(e)}")
             bot.send_message(call.message.chat.id, "❌ Ошибка при отмене операции.")
 
+
     @bot.callback_query_handler(func=lambda call: call.data.startswith("edit_record_"))
     def handle_edit_selection(call):
         try:
@@ -362,23 +363,22 @@ def setup_edit_handler(bot: TeleBot):
             # Create markup for editable fields
             markup = InlineKeyboardMarkup()
             
-            # Define all editable fields with their column indices
-            # Adjust these column indices based on your actual Google Sheets structure
+            # Define all editable fields with their EXACT column indices
             fields = [
-                ("Название изделия", "product_name", 3),
-                ("Цвет", "product_color", 7),
-                ("Дата отправки", "shipment_date", 4),
-                ("Ожидаемая дата прибытия", "estimated_arrival", 5),
-                ("Фактическая дата прибытия", "actual_arrival", 6),
-                ("Общее количество", "total_amount", 8),
-                ("Склад", "warehouse", 9),
-                ("Размеры", "sizes", 10),  # This will use the new size format
+                ("Название изделия", "product_name", 4),
+                ("Дата отправки", "shipment_date", 5),
+                ("Ожидаемая дата прибытия", "estimated_arrival", 6),
+                ("Фактическая дата прибытия", "actual_arrival", 7),
+                ("Цвет", "product_color", 8),
+                ("Общее количество", "total_amount", 9),
+                ("Склад", "warehouse", 10),
+                ("Размеры", "sizes", 11),
             ]
 
             for field_name, field_id, col_index in fields:
                 # Get current value, handling potential missing data
-                if col_index < len(record) and record[col_index]:
-                    current_value = record[col_index]
+                if col_index <= len(record) and col_index > 0 and record[col_index-1]:
+                    current_value = record[col_index-1]
                 else:
                     current_value = "Не указано"
                 
@@ -388,8 +388,16 @@ def setup_edit_handler(bot: TeleBot):
                     size_columns = get_size_column_mapping()
                     size_display = []
                     for size, col_num in size_columns.items():
-                        if col_num < len(record) and record[col_num] and int(record[col_num] or 0) > 0:
-                            size_display.append(f"{size}-{record[col_num]}")
+                        # Convert to 0-based index for record array access
+                        if col_num-1 < len(record) and record[col_num-1]:
+                            try:
+                                # Only try to convert to int if the value looks like a number
+                                value = record[col_num-1].strip()
+                                if value.isdigit() and int(value) > 0:
+                                    size_display.append(f"{size}-{value}")
+                            except (ValueError, AttributeError):
+                                # Skip if conversion fails
+                                continue
                     
                     if size_display:
                         current_value = ", ".join(size_display)
@@ -417,28 +425,40 @@ def setup_edit_handler(bot: TeleBot):
             markup.add(InlineKeyboardButton("❌ Отмена", callback_data="cancel_edit_operation"))
 
             # Create a comprehensive display of current values
-            # Get size information for display
+            # Get size information for display - WITH PROPER ERROR HANDLING
             size_columns = get_size_column_mapping()
             size_info = []
             total_sizes = 0
+            
             for size, col_num in size_columns.items():
-                if col_num < len(record) and record[col_num]:
-                    amount = int(record[col_num] or 0)
-                    if amount > 0:
-                        size_info.append(f"{size}: {amount}")
-                        total_sizes += amount
+                # Convert to 0-based index for record array access
+                try:
+                    if col_num-1 < len(record) and record[col_num-1]:
+                        value = record[col_num-1].strip()
+                        # Only process if the value is actually a number
+                        if value.isdigit():
+                            amount = int(value)
+                            if amount > 0:
+                                size_info.append(f"{size}: {amount}")
+                                total_sizes += amount
+                        # If it's not a digit, it might be text in the wrong column - skip it
+                except (ValueError, AttributeError, IndexError):
+                    # Skip any problematic values
+                    continue
             
             size_display = ", ".join(size_info) if size_info else "Не указано"
 
+            # Display current values (using 0-based indexing for record array)
+            # Add safety checks for all array accesses
             current_values = (
                 f"📋 **Редактирование записи**\n\n"
-                f"🏷️ **Изделие:** {record[3] if len(record) > 3 else 'Не указано'}\n"
-                f"🎨 **Цвет:** {record[7] if len(record) > 7 else 'Не указано'}\n"
-                f"📦 **Склад:** {record[9] if len(record) > 9 else 'Не указано'}\n\n"
-                f"📅 **Дата отправки:** {record[4] if len(record) > 4 else 'Не указано'}\n"
-                f"📅 **Ожидаемая дата прибытия:** {record[5] if len(record) > 5 else 'Не указано'}\n"
+                f"🏷️ **Изделие:** {record[3] if len(record) > 3 and record[3] else 'Не указано'}\n"
+                f"🎨 **Цвет:** {record[7] if len(record) > 7 and record[7] else 'Не указано'}\n"
+                f"📦 **Склад:** {record[9] if len(record) > 9 and record[9] else 'Не указано'}\n\n"
+                f"📅 **Дата отправки:** {record[4] if len(record) > 4 and record[4] else 'Не указано'}\n"
+                f"📅 **Ожидаемая дата прибытия:** {record[5] if len(record) > 5 and record[5] else 'Не указано'}\n"
                 f"📅 **Фактическая дата прибытия:** {record[6] if len(record) > 6 and record[6] else 'Не указано'}\n\n"
-                f"📊 **Общее количество:** {record[8] if len(record) > 8 else 'Не указано'}\n"
+                f"📊 **Общее количество:** {record[8] if len(record) > 8 and record[8] else 'Не указано'}\n"
                 f"📏 **Размеры:** {size_display}\n"
                 f"📈 **Всего по размерам:** {total_sizes}\n\n"
                 f"👆 **Выберите поле для редактирования:**"
@@ -454,11 +474,17 @@ def setup_edit_handler(bot: TeleBot):
 
         except Exception as e:
             logger.error(f"Error handling edit selection: {str(e)}")
+            # Add more detailed error information for debugging
+            logger.error(f"Row index: {row_index}, Record length: {len(record) if 'record' in locals() else 'N/A'}")
+            if 'record' in locals() and len(record) > 0:
+                logger.error(f"Record sample: {record[:min(15, len(record))]}")
+            
             bot.edit_message_text(
-                "❌ Ошибка при получении информации о записи.",
+                "❌ Ошибка при получении информации о записи. Проверьте логи для деталей.",
                 call.message.chat.id,
                 call.message.message_id
             )
+
 
 # REPLACE the existing handle_edit_selection function with this enhanced version:
 
@@ -574,55 +600,28 @@ def setup_edit_handler(bot: TeleBot):
                 call.message.message_id
             )
 
-# ALSO UPDATE the handle_edit_field_selection function to handle the new fields:
-
     @bot.callback_query_handler(func=lambda call: call.data.startswith("field_edit_"))
     def handle_edit_field_selection(call):
         try:
             bot.answer_callback_query(call.id)
 
-            # Parse the callback data
-            parts = call.data.split("_")
-            logger.info(f"Parsing callback data: {call.data}, parts: {parts}")
+            # Parse the callback data: field_edit_{row_index}_{field_id}_{col_index}
+            callback_parts = call.data.split("_")
+            logger.info(f"Parsing callback data: {call.data}, parts: {callback_parts}")
 
-            # Extract row index (always at position 2)
-            row_index = int(parts[2])
-
-            # Handle different field types
-            if len(parts) >= 5:
-                field_id = parts[3]
-                if field_id in ["product", "shipment", "estimated", "actual", "total"]:
-                    # Handle compound field names
-                    if parts[3] == "product" and len(parts) > 4:
-                        if parts[4] == "name":
-                            field_id = "product_name"
-                            col_index = int(parts[5])
-                        elif parts[4] == "color":
-                            field_id = "product_color"
-                            col_index = int(parts[5])
-                    elif parts[3] == "shipment" and parts[4] == "date":
-                        field_id = "shipment_date"
-                        col_index = int(parts[5])
-                    elif parts[3] == "estimated" and parts[4] == "arrival":
-                        field_id = "estimated_arrival"
-                        col_index = int(parts[5])
-                    elif parts[3] == "actual" and parts[4] == "arrival":
-                        field_id = "actual_arrival"
-                        col_index = int(parts[5])
-                    elif parts[3] == "total" and parts[4] == "amount":
-                        field_id = "total_amount"
-                        col_index = int(parts[5])
-                    else:
-                        logger.error(f"Unrecognized compound field pattern: {call.data}")
-                        bot.send_message(call.message.chat.id, "❌ Ошибка формата данных.")
-                        return
-                else:
-                    # Simple field names
-                    col_index = int(parts[4])
-            else:
+            if len(callback_parts) < 5:
                 logger.error(f"Invalid callback data format: {call.data}")
                 bot.send_message(call.message.chat.id, "❌ Ошибка формата данных.")
                 return
+
+            # Extract row index (always at position 2)
+            row_index = int(callback_parts[2])
+            
+            # The last part is always the column index
+            col_index = int(callback_parts[-1])
+            
+            # Everything between position 3 and the last position is the field_id
+            field_id = "_".join(callback_parts[3:-1])
 
             # Store editing state in user_data
             user_id = call.from_user.id
@@ -654,22 +653,25 @@ def setup_edit_handler(bot: TeleBot):
                     current_sizes = []
                     record = sheets_manager.get_main_worksheet().row_values(row_index)
                     for size, col_num in size_columns.items():
-                        if col_num < len(record) and record[col_num] and int(record[col_num] or 0) > 0:
-                            current_sizes.append(f"{size}-{record[col_num]}")
+                        # Convert to 0-based index for record array access
+                        if col_num-1 < len(record) and record[col_num-1] and int(record[col_num-1] or 0) > 0:
+                            current_sizes.append(f"{size}-{record[col_num-1]}")
                     current_value = ", ".join(current_sizes) if current_sizes else "Не указано"
                 else:
+                    # Get value from specific column (Google Sheets uses 1-based indexing)
                     current_value = sheets_manager.get_main_worksheet().cell(row_index, col_index).value
                     if not current_value:
                         current_value = "Не указано"
             except Exception as e:
-                logger.error(f"Error getting current value: {str(e)}")
+                logger.error(f"Error getting current value from row {row_index}, col {col_index}: {str(e)}")
                 current_value = "Не указано"
 
             prompt = (
                 f"✏️ **Редактирование поля**\n\n"
                 f"Введите новое **{field_name}**:\n"
                 f"({example})\n\n"
-                f"📝 Текущее значение: `{current_value}`"
+                f"📝 Текущее значение: `{current_value}`\n\n"
+                f"🔍 Debug info: Row {row_index}, Column {col_index}"
             )
 
             bot.send_message(
@@ -688,8 +690,6 @@ def setup_edit_handler(bot: TeleBot):
                 f"❌ Ошибка при выборе поля для редактирования: {str(e)}"
             )
 
-
-# REPLACE the existing handle_edit_field_input function with this enhanced version:
 
     @bot.message_handler(func=lambda message: user_data.has_user(message.from_user.id) and
                     user_data.get_user_data(message.from_user.id).get("editing_row"))
@@ -743,8 +743,8 @@ def setup_edit_handler(bot: TeleBot):
                         bot.reply_to(message, f"⚠️ Размер '{size}' не найден в системе. Доступные размеры: {', '.join(size_columns.keys())}")
                         return
 
-                # Update total amount in column 8 (if that's where total is stored)
-                worksheet.update_cell(row_index, 8, str(total_amount))
+                # Update total amount in column 9 (total_amount column)
+                worksheet.update_cell(row_index, 9, str(total_amount))
                 
                 success_message = f"✅ Размеры успешно обновлены!\n📏 Обновленные размеры: {', '.join(updated_sizes)}\n📊 Общее количество: {total_amount}"
                 
@@ -793,39 +793,48 @@ def setup_edit_handler(bot: TeleBot):
             # Log for debugging
             logger.info(f"Updated field {field_id} at row {row_index}, col {col_index} with value '{new_value}'")
 
-            # Don't clear editing state yet, keep user_records for potential back navigation
+            # IMPORTANT: Only clear the specific editing fields, keep user_records and pagination info
             user_data.update_user_data(user_id, "editing_field", None)
             user_data.update_user_data(user_id, "editing_col", None)
+            # DON'T clear editing_row yet as we need it for "continue editing"
+            # DON'T clear user_records or current_page as we need them for navigation
 
             # Show success message
             bot.reply_to(message, success_message)
 
-            # Retrieve and show the updated record
+            # Retrieve and show the updated record with proper error handling
             try:
                 record = worksheet.row_values(row_index)
 
-                # Get updated size information
+                # Get updated size information with proper error handling
                 size_columns = get_size_column_mapping()
                 size_info = []
                 total_sizes = 0
+                
                 for size, col_num in size_columns.items():
-                    if col_num < len(record) and record[col_num]:
-                        amount = int(record[col_num] or 0)
-                        if amount > 0:
-                            size_info.append(f"{size}: {amount}")
-                            total_sizes += amount
+                    try:
+                        if col_num-1 < len(record) and record[col_num-1]:
+                            value = record[col_num-1].strip()
+                            if value.isdigit():
+                                amount = int(value)
+                                if amount > 0:
+                                    size_info.append(f"{size}: {amount}")
+                                    total_sizes += amount
+                    except (ValueError, AttributeError, IndexError):
+                        # Skip problematic values
+                        continue
                 
                 size_display = ", ".join(size_info) if size_info else "Не указано"
 
                 updated_values = (
                     f"📋 **Обновленная запись:**\n\n"
-                    f"🏷️ **Изделие:** {record[3] if len(record) > 3 else 'Не указано'}\n"
-                    f"🎨 **Цвет:** {record[7] if len(record) > 7 else 'Не указано'}\n"
-                    f"📦 **Склад:** {record[9] if len(record) > 9 else 'Не указано'}\n\n"
-                    f"📅 **Дата отправки:** {record[4] if len(record) > 4 else 'Не указано'}\n"
-                    f"📅 **Ожидаемая дата прибытия:** {record[5] if len(record) > 5 else 'Не указано'}\n"
+                    f"🏷️ **Изделие:** {record[3] if len(record) > 3 and record[3] else 'Не указано'}\n"
+                    f"🎨 **Цвет:** {record[7] if len(record) > 7 and record[7] else 'Не указано'}\n"
+                    f"📦 **Склад:** {record[9] if len(record) > 9 and record[9] else 'Не указано'}\n\n"
+                    f"📅 **Дата отправки:** {record[4] if len(record) > 4 and record[4] else 'Не указано'}\n"
+                    f"📅 **Ожидаемая дата прибытия:** {record[5] if len(record) > 5 and record[5] else 'Не указано'}\n"
                     f"📅 **Фактическая дата прибытия:** {record[6] if len(record) > 6 and record[6] else 'Не указано'}\n\n"
-                    f"📊 **Общее количество:** {record[8] if len(record) > 8 else 'Не указано'}\n"
+                    f"📊 **Общее количество:** {record[8] if len(record) > 8 and record[8] else 'Не указано'}\n"
                     f"📏 **Размеры:** {size_display}\n"
                     f"📈 **Всего по размерам:** {total_sizes}"
                 )
@@ -833,6 +842,8 @@ def setup_edit_handler(bot: TeleBot):
                 markup = InlineKeyboardMarkup()
                 markup.add(InlineKeyboardButton("📝 Продолжить редактирование",
                                             callback_data=f"edit_record_{row_index}"))
+                markup.add(InlineKeyboardButton("⬅️ Назад к списку записей",
+                                            callback_data="back_to_record_selection"))
                 markup.add(InlineKeyboardButton("✅ Завершить",
                                             callback_data="edit_done"))
 
@@ -844,26 +855,27 @@ def setup_edit_handler(bot: TeleBot):
                 )
             except Exception as e:
                 logger.error(f"Error fetching updated record: {str(e)}")
+                # Still provide navigation options even if record display fails
+                markup = InlineKeyboardMarkup()
+                markup.add(InlineKeyboardButton("📝 Продолжить редактирование",
+                                            callback_data=f"edit_record_{row_index}"))
+                markup.add(InlineKeyboardButton("⬅️ Назад к списку записей",
+                                            callback_data="back_to_record_selection"))
+                markup.add(InlineKeyboardButton("✅ Завершить",
+                                            callback_data="edit_done"))
+                
                 bot.send_message(
                     message.chat.id,
-                    "✅ Значение успешно обновлено, но не удалось получить обновленную запись."
+                    "✅ Значение успешно обновлено!",
+                    reply_markup=markup
                 )
 
         except Exception as e:
             logger.error(f"Error handling edit field input: {str(e)}")
             bot.reply_to(message, f"❌ Ошибка при обновлении значения: {str(e)}")
-            user_data.clear_user_data(message.from_user.id)
-
-    @bot.callback_query_handler(func=lambda call: call.data == "edit_done")
-    def handle_edit_done(call):
-        try:
-            bot.answer_callback_query(call.id)
-            bot.send_message(call.message.chat.id, "Редактирование завершено.")
-            # Clear user data when editing is complete
-            user_id = call.from_user.id
-            user_data.clear_user_data(user_id)
-        except Exception as e:
-            logger.error(f"Error handling edit done: {str(e)}")
+            # Don't clear all user data on error, just the editing fields
+            user_data.update_user_data(message.from_user.id, "editing_field", None)
+            user_data.update_user_data(message.from_user.id, "editing_col", None)
 
     @bot.callback_query_handler(func=lambda call: call.data == "back_to_record_selection")
     def handle_back_to_record_selection(call):
@@ -873,20 +885,97 @@ def setup_edit_handler(bot: TeleBot):
 
             # Get the stored user records and current page
             user_data_dict = user_data.get_user_data(user_id)
-            user_records = user_data_dict.get("user_records") if user_data_dict else None
-            current_page = user_data_dict.get("current_page", 0) if user_data_dict else 0
-
-            if not user_records:
-                bot.send_message(call.message.chat.id, "❌ Ошибка: список записей не найден.")
+            
+            if not user_data_dict:
+                logger.error(f"No user data found for user {user_id}")
+                bot.edit_message_text(
+                    "❌ Ошибка: сессия редактирования не найдена. Используйте /edit для начала редактирования.",
+                    call.message.chat.id,
+                    call.message.message_id
+                )
                 return
 
+            user_records = user_data_dict.get("user_records")
+            current_page = user_data_dict.get("current_page", 0)
+
+            if not user_records:
+                logger.error(f"No user_records found in user_data for user {user_id}. Available keys: {list(user_data_dict.keys())}")
+                
+                # Try to regenerate the user records list
+                try:
+                    sheets_manager = GoogleSheetsManager.get_instance()
+                    records = sheets_manager.get_main_worksheet().get_all_values()
+
+                    if len(records) <= 1:
+                        bot.edit_message_text(
+                            "📝 Нет доступных записей для редактирования.",
+                            call.message.chat.id,
+                            call.message.message_id
+                        )
+                        return
+
+                    # Filter records to show only those created by the current user
+                    regenerated_user_records = []
+                    for idx, record in enumerate(records[1:], start=2):
+                        # Check if the record has a user_id field (column 1) and it matches current user
+                        if len(record) > 1 and record[1] == str(user_id):
+                            regenerated_user_records.append((idx, record))
+
+                    if not regenerated_user_records:
+                        bot.edit_message_text(
+                            "📝 У вас пока нет созданных записей для редактирования.",
+                            call.message.chat.id,
+                            call.message.message_id
+                        )
+                        return
+
+                    # Update user data with regenerated records
+                    user_data.update_user_data(user_id, "user_records", regenerated_user_records)
+                    user_data.update_user_data(user_id, "current_page", 0)
+                    
+                    user_records = regenerated_user_records
+                    current_page = 0
+                    
+                    logger.info(f"Successfully regenerated {len(user_records)} user records for user {user_id}")
+
+                except Exception as e:
+                    logger.error(f"Error regenerating user records: {str(e)}")
+                    bot.edit_message_text(
+                        "❌ Ошибка при восстановлении списка записей. Используйте /edit для начала редактирования.",
+                        call.message.chat.id,
+                        call.message.message_id
+                    )
+                    return
+
+            # Clear only the editing_row since we're going back to the list
+            user_data.update_user_data(user_id, "editing_row", None)
+            
             # Show the record selection menu again with pagination
             show_record_selection_menu_paginated(bot, call.message.chat.id, user_records, current_page, call.message.message_id)
 
         except Exception as e:
             logger.error(f"Error handling back to record selection: {str(e)}")
-            bot.send_message(call.message.chat.id, "❌ Ошибка при возврате к выбору записи.")
+            bot.edit_message_text(
+                "❌ Ошибка при возврате к выбору записи. Используйте /edit для начала редактирования.",
+                call.message.chat.id,
+                call.message.message_id
+            )
 
-    def show_record_selection_menu(bot, chat_id, user_records, message_id=None):
-        """Helper function to show the record selection menu (backward compatibility)"""
-        show_record_selection_menu_paginated(bot, chat_id, user_records, 0, message_id)
+    @bot.callback_query_handler(func=lambda call: call.data == "edit_done")
+    def handle_edit_done(call):
+        try:
+            bot.answer_callback_query(call.id)
+            bot.edit_message_text(
+                "✅ Редактирование завершено.",
+                call.message.chat.id,
+                call.message.message_id
+            )
+            # Clear all user data when editing is complete
+            user_id = call.from_user.id
+            user_data.clear_user_data(user_id)
+        except Exception as e:
+            logger.error(f"Error handling edit done: {str(e)}")
+            bot.send_message(call.message.chat.id, "✅ Редактирование завершено.")
+            # Clear user data even if message editing fails
+            user_id = call.from_user.id
+            user_data.clear_user_data(user_id)
