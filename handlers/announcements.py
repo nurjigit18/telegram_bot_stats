@@ -315,6 +315,14 @@ def setup_announcement_handlers(bot: TeleBot):
             reply_markup=markup
         )
 
+    # ADD THIS NEW HANDLER TO FIX THE BACK BUTTON ISSUE
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("show_media_options_"))
+    def handle_show_media_options(call):
+        """Handle showing media options when coming back from send options."""
+        bot.answer_callback_query(call.id)
+        target_type = call.data.split("_")[-1]  # Extract "all" or "individual" 
+        show_media_options(bot, call.message.chat.id, call.message.message_id, target_type)
+
     @bot.callback_query_handler(func=lambda call: call.data.startswith("show_send_options_"))
     def handle_show_send_options(call):
         """Handles showing the send options (now or schedule)."""
@@ -335,7 +343,6 @@ def setup_announcement_handlers(bot: TeleBot):
             user_data.initialize_user(user_id)
 
         user_data.set_current_action(user_id, "announcing_to_all")
-        bot.register_next_step_handler(call.message, process_announcement)
 
     @bot.callback_query_handler(func=lambda call: call.data == "announce_individual")
     def handle_announce_individual(call):
@@ -351,7 +358,6 @@ def setup_announcement_handlers(bot: TeleBot):
 
         # Show page 1 of user list
         show_user_list_page(call.message.chat.id, call.message.message_id, page=1)
-
 
     @bot.callback_query_handler(func=lambda call: call.data.startswith("user_"))
     def handle_user_selection(call):
@@ -541,7 +547,6 @@ def setup_announcement_handlers(bot: TeleBot):
 
             markup.row(*nav_buttons)
 
-
             # Back to main menu
             markup.row(InlineKeyboardButton("⬅️ Прошлое меню", callback_data="admin_new_announce"))
 
@@ -561,7 +566,6 @@ def setup_announcement_handlers(bot: TeleBot):
             bot.edit_message_text("❌ Ошибка при получении списка пользователей. Попробуйте позже.",
                                 chat_id, message_id)
 
-            
     @bot.callback_query_handler(func=lambda call: call.data.startswith("notify_users_page_"))
     def handle_user_pagination(call):
         bot.answer_callback_query(call.id)
@@ -571,3 +575,9 @@ def setup_announcement_handlers(bot: TeleBot):
         except Exception as e:
             logger.error(f"Error in pagination handler: {e}")
             bot.send_message(call.message.chat.id, "❌ Ошибка при переключении страниц.")
+
+    # ADD HANDLER FOR NOOP PAGE BUTTON
+    @bot.callback_query_handler(func=lambda call: call.data == "noop_page")
+    def handle_noop_page(call):
+        """Handle the non-functional page indicator button."""
+        bot.answer_callback_query(call.id)

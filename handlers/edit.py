@@ -15,7 +15,7 @@ ITEMS_PER_PAGE = 10  # Number of items to show per page
 def parse_new_size_format(size_input):
     """
     Parse size input in format: S-10, XL-20, 7XL-30
-    Returns dictionary with size as key and amount as value
+    Returns dictionary with size as ke  y and amount as value
     """
     sizes = {}
     try:
