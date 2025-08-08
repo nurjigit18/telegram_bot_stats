@@ -12,3 +12,5 @@ utils__pycache__/
 /test_openai_integration.py
 /bot_data.db
 /heartbeat.txt
+/tg_bot
+/bot

@@ -52,27 +52,27 @@ def setup_start_handler(bot: TeleBot):
             "Пожалуйста введите все данные при заполнении."
         )
 
-        # ----------- Inline Main Menu Keyboard -----------
-        keyboard = types.InlineKeyboardMarkup(row_width=1)
-        keyboard.add(
-            types.InlineKeyboardButton("Сохранить запись", callback_data='mainmenu_save'),
-            types.InlineKeyboardButton("Изменить запись", callback_data='mainmenu_edit'),
-            types.InlineKeyboardButton("Запись и статус записи", callback_data='mainmenu_status'),
-            types.InlineKeyboardButton("Отправить чек", callback_data='mainmenu_payment')
-        )
+        # # ----------- Inline Main Menu Keyboard -----------
+        # keyboard = types.InlineKeyboardMarkup(row_width=1)
+        # keyboard.add(
+        #     types.InlineKeyboardButton("Сохранить запись", callback_data='mainmenu_save'),
+        #     types.InlineKeyboardButton("Изменить запись", callback_data='mainmenu_edit'),
+        #     types.InlineKeyboardButton("Запись и статус записи", callback_data='mainmenu_status'),
+        #     types.InlineKeyboardButton("Отправить чек", callback_data='mainmenu_payment')
+        # )
 
         bot.send_message(message.chat.id, welcome_text, reply_markup=keyboard)
 
-    # ----------- Inline Button Handlers -----------
-    @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith('mainmenu_'))
-    def handle_menu_buttons(call):
-        if call.data == 'mainmenu_save':
-            bot.send_message(call.message.chat.id, "📝 Пожалуйста, введите данные для сохранения изделия.")
-        elif call.data == 'mainmenu_edit':
-            bot.send_message(call.message.chat.id, "✏️ Введите ID записи для изменения.")
-        elif call.data == 'mainmenu_status':
-            bot.send_message(call.message.chat.id, "📋 Введите ID изделия для проверки статуса.")
-        elif call.data == 'mainmenu_payment':
-            bot.send_message(call.message.chat.id, "💸 Пожалуйста, отправьте фото чека или PDF.")
+    # # ----------- Inline Button Handlers -----------
+    # @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith('mainmenu_'))
+    # def handle_menu_buttons(call):
+    #     if call.data == 'mainmenu_save':
+    #         bot.send_message(call.message.chat.id, "📝 Пожалуйста, введите данные для сохранения изделия.")
+    #     elif call.data == 'mainmenu_edit':
+    #         bot.send_message(call.message.chat.id, "✏️ Введите ID записи для изменения.")
+    #     elif call.data == 'mainmenu_status':
+    #         bot.send_message(call.message.chat.id, "📋 Введите ID изделия для проверки статуса.")
+    #     elif call.data == 'mainmenu_payment':
+    #         bot.send_message(call.message.chat.id, "💸 Пожалуйста, отправьте фото чека или PDF.")
 
-        bot.answer_callback_query(call.id)
+    #     bot.answer_callback_query(call.id)
