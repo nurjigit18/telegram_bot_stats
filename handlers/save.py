@@ -243,52 +243,58 @@ def setup_save_handler(bot: TeleBot):
             if OPENAI_ENABLED:
                 processing_msg = "🤖 Обрабатываю ваш запрос с помощью ИИ..."
                 bot.reply_to(message, processing_msg)
-                # Add bot's processing message to context
                 user_data.add_message_to_context(user_id, "assistant", processing_msg)
                 
                 success, parsed_data, error_msg = openai_parser.parse_product_data(message.text, user_id=user_id)
                 
                 if success and parsed_data:
-                    # Extract data from OpenAI response
-                    product_name = parsed_data['product_name']
-                    product_color = parsed_data['product_color']
-                    total_amount = parsed_data['total_amount']
-                    warehouse_sizes_str = parsed_data['warehouse_sizes']
-                    shipment_date_str = parsed_data['shipment_date']
-                    estimated_arrival_str = parsed_data['estimated_arrival']
-                    
-                    # Show what was extracted for confirmation
-                    confirmation_msg = (
-                        "🤖 ИИ извлек следующие данные:\n\n"
-                        f"📦 Название изделия: {product_name}\n"
-                        f"🎨 Цвет изделия: {product_color}\n"
-                        f"📊 Количество: {total_amount} шт\n"
-                        f"🏪 Склады и размеры: {warehouse_sizes_str}\n"
-                        f"📅 Дата отправки: {shipment_date_str}\n"
-                        f"📅 Дата прибытия: {estimated_arrival_str}\n\n"
-                        "✅ Проверяю данные..."
+                    # Check if we have ALL required fields with valid data
+                    required_fields = ['product_name', 'product_color', 'total_amount', 'warehouse_sizes', 'shipment_date', 'estimated_arrival']
+                    all_fields_present = all(
+                        field in parsed_data and 
+                        parsed_data[field] is not None and 
+                        str(parsed_data[field]).strip() != '' 
+                        for field in required_fields
                     )
-                    bot.reply_to(message, confirmation_msg)
-                    # Add confirmation message to context
-                    user_data.add_message_to_context(user_id, "assistant", confirmation_msg)
                     
-                    openai_success = True
-                    total_amount_str = str(total_amount)
-                else:
-                    # Check if we have partial data to generate a friendly request
-                    if parsed_data and any(parsed_data.values()):
-                        # Generate friendly missing data request
+                    if all_fields_present:
+                        # Extract data from OpenAI response
+                        product_name = parsed_data['product_name']
+                        product_color = parsed_data['product_color']
+                        total_amount = parsed_data['total_amount']
+                        warehouse_sizes_str = parsed_data['warehouse_sizes']
+                        shipment_date_str = parsed_data['shipment_date']
+                        estimated_arrival_str = parsed_data['estimated_arrival']
+                        
+                        # Show what was extracted for confirmation
+                        confirmation_msg = (
+                            "🤖 ИИ извлек следующие данные:\n\n"
+                            f"📦 Название изделия: {product_name}\n"
+                            f"🎨 Цвет изделия: {product_color}\n"
+                            f"📊 Количество: {total_amount} шт\n"
+                            f"🏪 Склады и размеры: {warehouse_sizes_str}\n"
+                            f"📅 Дата отправки: {shipment_date_str}\n"
+                            f"📅 Дата прибытия: {estimated_arrival_str}\n\n"
+                            "✅ Проверяю данные..."
+                        )
+                        bot.reply_to(message, confirmation_msg)
+                        user_data.add_message_to_context(user_id, "assistant", confirmation_msg)
+                        
+                        openai_success = True
+                        total_amount_str = str(total_amount)
+                    else:
+                        # Some fields are missing or invalid - generate friendly request
                         friendly_request = openai_parser.generate_missing_data_request(message.text, parsed_data)
                         bot.reply_to(message, friendly_request)
-                        # Add friendly request to context
                         user_data.add_message_to_context(user_id, "assistant", friendly_request)
                         return
-                    else:
-                        logger.warning(f"OpenAI parsing failed: {error_msg}")
-                        fallback_msg = f"🤖 Не удалось обработать запрос через ИИ\n\n📋 Попробую обработать как строгий формат..."
-                        bot.reply_to(message, fallback_msg)
-                        # Add fallback message to context
-                        user_data.add_message_to_context(user_id, "assistant", fallback_msg)
+                else:
+                    # OpenAI parsing completely failed
+                    logger.warning(f"OpenAI parsing failed: {error_msg}")
+                    fallback_msg = f"🤖 Не удалось обработать запрос через ИИ\n\n📋 Попробую обработать как строгий формат..."
+                    bot.reply_to(message, fallback_msg)
+                    user_data.add_message_to_context(user_id, "assistant", fallback_msg)
+
             
             # Fall back to strict format parsing if OpenAI failed or is disabled
             if not openai_success:
