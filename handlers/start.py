@@ -48,8 +48,11 @@ def setup_start_handler(bot: TeleBot):
 ✉️Следить за важными новостями и обновлениями от нашей команды.
 
 Всё просто, удобно и в одном месте!\n\n"""
-            "Нажмите кнопку ниже чтобы выбрать действие.\n"
-            "Пожалуйста введите все данные при заполнении."
+            "Нажмите /save чтобы ввести данные изделия.\n"
+            "Нажмите /edit чтобы редактировать данные.\n"
+            "Нажмите /status чтобы проверить статус вашего изделия.\n"
+            "Нажмите /payment чтобы отправить чек опалыт.\n"
+            "Нажмите /help для подробной информации.\n"
         )
 
         # # ----------- Inline Main Menu Keyboard -----------
@@ -61,7 +64,7 @@ def setup_start_handler(bot: TeleBot):
         #     types.InlineKeyboardButton("Отправить чек", callback_data='mainmenu_payment')
         # )
 
-        bot.send_message(message.chat.id, welcome_text, reply_markup=keyboard)
+        bot.send_message(message.chat.id, welcome_text)
 
     # # ----------- Inline Button Handlers -----------
     # @bot.callback_query_handler(func=lambda call: call.data and call.data.startswith('mainmenu_'))

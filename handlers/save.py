@@ -239,13 +239,14 @@ def setup_save_handler(bot: TeleBot):
         
         try:
             # Try OpenAI parsing first if enabled
-            openai_success = False
             if OPENAI_ENABLED:
                 processing_msg = "🤖 Обрабатываю ваш запрос с помощью ИИ..."
                 bot.reply_to(message, processing_msg)
                 user_data.add_message_to_context(user_id, "assistant", processing_msg)
                 
                 success, parsed_data, error_msg = openai_parser.parse_product_data(message.text, user_id=user_id)
+                
+                logger.info(f"OpenAI parsing result: success={success}, parsed_data={parsed_data}")
                 
                 if success and parsed_data:
                     # Check if we have ALL required fields with valid data
@@ -258,7 +259,7 @@ def setup_save_handler(bot: TeleBot):
                     )
                     
                     if all_fields_present:
-                        # Extract data from OpenAI response
+                        # Process OpenAI-extracted data
                         product_name = parsed_data['product_name']
                         product_color = parsed_data['product_color']
                         total_amount = parsed_data['total_amount']
@@ -280,185 +281,129 @@ def setup_save_handler(bot: TeleBot):
                         bot.reply_to(message, confirmation_msg)
                         user_data.add_message_to_context(user_id, "assistant", confirmation_msg)
                         
-                        openai_success = True
-                        total_amount_str = str(total_amount)
+                        # Validate OpenAI-extracted data
+                        validation_errors = validate_extracted_data(
+                            product_name, product_color, total_amount, 
+                            warehouse_sizes_str, shipment_date_str, estimated_arrival_str
+                        )
+                        
+                        if validation_errors:
+                            # Show validation errors for OpenAI data
+                            error_message = "❌ Найдены следующие ошибки в извлеченных данных:\n\n" + "\n".join(validation_errors)
+                            error_message += "\n\nПожалуйста, исправьте данные и отправьте заново."
+                            bot.reply_to(message, error_message)
+                            user_data.add_message_to_context(user_id, "assistant", error_message)
+                            return
+                        
+                        # If validation passed, proceed to save
+                        save_data_to_sheets(bot, message, user_id, product_name, product_color, 
+                                          total_amount, warehouse_sizes_str, 
+                                          standardize_date(shipment_date_str), 
+                                          standardize_date(estimated_arrival_str))
+                        return
+                        
                     else:
-                        # Some fields are missing or invalid - generate friendly request
+                        # Some fields are missing - generate friendly request
                         friendly_request = openai_parser.generate_missing_data_request(message.text, parsed_data)
                         bot.reply_to(message, friendly_request)
                         user_data.add_message_to_context(user_id, "assistant", friendly_request)
                         return
                 else:
-                    # OpenAI parsing completely failed
+                    # OpenAI parsing failed - fall back to strict format
                     logger.warning(f"OpenAI parsing failed: {error_msg}")
                     fallback_msg = f"🤖 Не удалось обработать запрос через ИИ\n\n📋 Попробую обработать как строгий формат..."
                     bot.reply_to(message, fallback_msg)
                     user_data.add_message_to_context(user_id, "assistant", fallback_msg)
-
             
             # Fall back to strict format parsing if OpenAI failed or is disabled
-            if not openai_success:
-                # Parse the input message
-                lines = [line.strip() for line in message.text.strip().split('\n') if line.strip()]
-                
-                # Check if we have the correct number of lines
-                expected_fields = 6
-                if len(lines) != expected_fields:
-                    if OPENAI_ENABLED:
-                        error_msg = (
-                            f"❌ Не удалось обработать ни через ИИ, ни через строгий формат.\n\n"
-                            f"Для строгого формата ожидается {expected_fields} строк, получено {len(lines)}.\n\n"
-                            "Убедитесь, что вы заполнили все поля в правильном порядке:\n"
-                            "1. Название изделия\n"
-                            "2. Цвет изделия\n"
-                            "3. Количество (шт)\n"
-                            "4. Склады и размеры\n"
-                            "5. Дата отправки\n"
-                            "6. Дата возможного прибытия\n\n"
-                            "Или попробуйте описать товар естественным языком."
-                        )
-                    else:
-                        error_msg = (
-                            f"❌ Неверное количество полей. Ожидается {expected_fields} строк, получено {len(lines)}.\n\n"
-                            "Убедитесь, что вы заполнили все поля в правильном порядке:\n"
-                            "1. Название изделия\n"
-                            "2. Цвет изделия\n"
-                            "3. Количество (шт)\n"
-                            "4. Склады и размеры\n"
-                            "5. Дата отправки\n"
-                            "6. Дата возможного прибытия"
-                        )
-                    bot.reply_to(message, error_msg)
-                    # Add error message to context
-                    user_data.add_message_to_context(user_id, "assistant", error_msg)
-                    return
+            handle_strict_format_input(bot, message, user_id)
+            
+        except Exception as e:
+            logger.error(f"Error in handle_single_save_input: {str(e)}")
+            bot.reply_to(message, f"❌ Произошла ошибка при обработке данных: {str(e)}. Попробуйте еще раз.")
+            user_data.clear_user_data(user_id)
 
-                # Extract and validate each field
-                product_name = lines[0]
-                product_color = lines[1]
-                total_amount_str = lines[2]
-                warehouse_sizes_str = lines[3]
-                shipment_date_str = lines[4]
-                estimated_arrival_str = lines[5]
+    def validate_extracted_data(product_name, product_color, total_amount, warehouse_sizes_str, shipment_date_str, estimated_arrival_str):
+        """Validate extracted data and return list of errors"""
+        errors = []
 
-            errors = []
+        # Validate product name
+        if not product_name or not product_name.strip():
+            errors.append("• Название изделия не может быть пустым")
 
-            # Validate product name
-            if not product_name:
-                errors.append("• Название изделия не может быть пустым")
+        # Validate product color
+        if not product_color or not product_color.strip():
+            errors.append("• Цвет изделия не может быть пустым")
 
-            # Validate product color
-            if not product_color:
-                errors.append("• Цвет изделия не может быть пустым")
+        # Validate total amount
+        if not isinstance(total_amount, int) or total_amount <= 0:
+            errors.append("• Неверное количество. Должно быть положительным числом")
 
-            # Validate total amount
-            if not validate_amount(total_amount_str):
-                errors.append("• Неверное количество. Введите положительное число")
+        # Validate warehouse and sizes format
+        is_valid, error_msg = validate_warehouse_sizes_enhanced(warehouse_sizes_str)
+        if not is_valid:
+            errors.append(f"• {error_msg}")
+        else:
+            warehouse_data = parse_warehouse_sizes(warehouse_sizes_str)
+            if not warehouse_data:
+                errors.append("• Ошибка при разборе складов и размеров")
             else:
-                total_amount = int(total_amount_str)
-
-            # Validate warehouse and sizes format
-            is_valid, error_msg = validate_warehouse_sizes_enhanced(warehouse_sizes_str)
-            if not is_valid:
-                errors.append(f"• {error_msg}")
-            else:
-                warehouse_data = parse_warehouse_sizes(warehouse_sizes_str)
-                if not warehouse_data:
-                    errors.append("• Ошибка при разборе складов и размеров. Проверьте названия размеров и количества")
-                else:
-                    # Validate that total amounts match
-                    calculated_total = sum(sum(sizes.values()) for _, sizes in warehouse_data)
-                    if calculated_total != total_amount:
-                        errors.append(f"• Сумма размеров ({calculated_total}) не совпадает с общим количеством ({total_amount})")
-                        
-                        # Provide detailed breakdown for debugging
-                        breakdown = []
-                        for warehouse_name, sizes in warehouse_data:
-                            warehouse_total = sum(sizes.values())
-                            size_details = ", ".join([f"{size}:{qty}" for size, qty in sizes.items()])
-                            breakdown.append(f"  {warehouse_name}: {size_details} = {warehouse_total}")
-                        
-                        errors.append("Разбивка по складам:\n" + "\n".join(breakdown))
-
-            # Validate shipment date
-            if not validate_date(shipment_date_str):
-                errors.append("• Неверный формат даты отправки. Используйте дд/мм/гггг или дд.мм.гггг")
-            else:
-                shipment_date = standardize_date(shipment_date_str)
-
-            # Validate estimated arrival date
-            if not validate_date(estimated_arrival_str):
-                errors.append("• Неверный формат даты прибытия. Используйте дд/мм/гггг или дд.мм.гггг")
-            else:
-                estimated_arrival = standardize_date(estimated_arrival_str)
-
-            # If there are validation errors, generate friendly message using OpenAI
-            if errors:
-                if OPENAI_ENABLED and openai_success:
-                    # Create partial data with what we successfully extracted
-                    partial_data_for_errors = {
-                        'product_name': product_name if product_name else None,
-                        'product_color': product_color if product_color else None,
-                        'total_amount': total_amount if 'total_amount' in locals() else None,
-                        'warehouse_sizes': warehouse_sizes_str if warehouse_sizes_str else None,
-                        'shipment_date': shipment_date_str if shipment_date_str else None,
-                        'estimated_arrival': estimated_arrival_str if estimated_arrival_str else None
-                    }
+                # Validate that total amounts match
+                calculated_total = sum(sum(sizes.values()) for _, sizes in warehouse_data)
+                if calculated_total != total_amount:
+                    errors.append(f"• Сумма размеров ({calculated_total}) не совпадает с общим количеством ({total_amount})")
                     
-                    # Generate friendly validation error message
-                    validation_prompt = f"Пользователь ввёл данные, но есть проблемы с валидацией: {'; '.join(errors)}. Сгенерируй дружелюбное сообщение с просьбой исправить данные."
-                    friendly_validation_msg = openai_parser.generate_missing_data_request(validation_prompt, partial_data_for_errors)
-                    bot.reply_to(message, friendly_validation_msg)
-                    # Add validation error message to context
-                    user_data.add_message_to_context(user_id, "assistant", friendly_validation_msg)
-                else:
-                    # Fallback to standard error message
-                    error_message = "❌ Найдены следующие ошибки:\n\n" + "\n".join(errors)
-                    error_message += "\n\nПожалуйста, исправьте ошибки и отправьте данные заново."
-                    bot.reply_to(message, error_message)
-                    # Add error message to context
-                    user_data.add_message_to_context(user_id, "assistant", error_message)
-                return
+                    # Provide detailed breakdown for debugging
+                    breakdown = []
+                    for warehouse_name, sizes in warehouse_data:
+                        warehouse_total = sum(sizes.values())
+                        size_details = ", ".join([f"{size}:{qty}" for size, qty in sizes.items()])
+                        breakdown.append(f"  {warehouse_name}: {size_details} = {warehouse_total}")
+                    
+                    errors.append("Разбивка по складам:\n" + "\n".join(breakdown))
 
-            # If validation passed, save the data
-            # For multiple warehouses, we'll create multiple records
+        # Validate shipment date
+        if not validate_date(shipment_date_str):
+            errors.append("• Неверный формат даты отправки. Используйте дд/мм/гггг или дд.мм.гггг")
+
+        # Validate estimated arrival date
+        if not validate_date(estimated_arrival_str):
+            errors.append("• Неверный формат даты прибытия. Используйте дд/мм/гггг или дд.мм.гггг")
+
+        return errors
+
+    def save_data_to_sheets(bot, message, user_id, product_name, product_color, total_amount, warehouse_sizes_str, shipment_date, estimated_arrival):
+        """Save validated data to Google Sheets"""
+        try:
+            warehouse_data = parse_warehouse_sizes(warehouse_sizes_str)
             saved_records = 0
-            warehouse_records = []  # Keep track of what was saved for confirmation
+            warehouse_records = []
             
             for warehouse_name, sizes in warehouse_data:
-                # Clear previous form data to avoid contamination between warehouses
+                # Clear previous form data
                 user_data.initialize_form_data(user_id)
                 
-                # Set the basic form data for this specific warehouse
+                # Set form data for this warehouse
                 user_data.update_form_data(user_id, 'product_name', product_name)
                 user_data.update_form_data(user_id, 'product_color', product_color)
-                user_data.update_form_data(user_id, 'total_amount', sum(sizes.values()))  # Amount for this warehouse only
+                user_data.update_form_data(user_id, 'total_amount', sum(sizes.values()))
                 user_data.update_form_data(user_id, 'warehouse', warehouse_name)
                 user_data.update_form_data(user_id, 'shipment_date', shipment_date)
                 user_data.update_form_data(user_id, 'estimated_arrival', estimated_arrival)
 
-                # Add size amounts to form data for this specific warehouse
+                # Add size amounts
                 for size_key, size_value in sizes.items():
                     user_data.update_form_data(user_id, size_key, size_value)
 
-                # Save to Google Sheets for this warehouse
-                try:
-                    row_index = save_to_sheets(bot, message)
-                    saved_records += 1
-                    warehouse_records.append((warehouse_name, sizes))
-                    
-                    # Notify admins about the new record
-                    notify_admins_about_new_record(bot, message, row_index)
-                    
-                    logger.info(f"Successfully saved record for warehouse {warehouse_name} with sizes: {sizes}")
-                    
-                except Exception as e:
-                    logger.error(f"Error saving warehouse {warehouse_name}: {str(e)}")
-                    bot.reply_to(message, f"❌ Ошибка при сохранении данных для склада {warehouse_name}: {str(e)}")
-                    user_data.clear_user_data(user_id)
-                    return
+                # Save to sheets
+                row_index = save_to_sheets(bot, message)
+                saved_records += 1
+                warehouse_records.append((warehouse_name, sizes))
+                
+                notify_admins_about_new_record(bot, message, row_index)
+                logger.info(f"Successfully saved record for warehouse {warehouse_name}")
 
-            # Show confirmation message with all saved data
+            # Show success confirmation
             warehouse_summary = []
             for warehouse_name, sizes in warehouse_records:
                 size_str = ", ".join([f"{size}: {qty}" for size, qty in sizes.items()])
@@ -475,17 +420,83 @@ def setup_save_handler(bot: TeleBot):
                 f"Создано записей: {saved_records}"
             )
             bot.reply_to(message, confirmation_msg)
-            
-            # Add success message to context
             user_data.add_message_to_context(user_id, "assistant", confirmation_msg)
-
-            # Clear user data after successful completion (this also clears context)
+            
+            # Clear user data after success
             user_data.clear_user_data(user_id)
-
+            
         except Exception as e:
-            logger.error(f"Error in handle_single_save_input: {str(e)}")
-            bot.reply_to(message, f"❌ Произошла ошибка при обработке данных: {str(e)}. Попробуйте еще раз.")
+            logger.error(f"Error saving to sheets: {str(e)}")
+            bot.reply_to(message, f"❌ Ошибка при сохранении: {str(e)}")
             user_data.clear_user_data(user_id)
+
+    def handle_strict_format_input(bot, message, user_id):
+        """Handle strict format input as fallback"""
+        lines = [line.strip() for line in message.text.strip().split('\n') if line.strip()]
+        
+        expected_fields = 6
+        if len(lines) != expected_fields:
+            if OPENAI_ENABLED:
+                error_msg = (
+                    f"❌ Не удалось обработать ни через ИИ, ни через строгий формат.\n\n"
+                    f"Для строгого формата ожидается {expected_fields} строк, получено {len(lines)}.\n\n"
+                    "Убедитесь, что вы заполнили все поля в правильном порядке:\n"
+                    "1. Название изделия\n"
+                    "2. Цвет изделия\n"
+                    "3. Количество (шт)\n"
+                    "4. Склады и размеры\n"
+                    "5. Дата отправки\n"
+                    "6. Дата возможного прибытия\n\n"
+                    "Или попробуйте описать товар естественным языком."
+                )
+            else:
+                error_msg = (
+                    f"❌ Неверное количество полей. Ожидается {expected_fields} строк, получено {len(lines)}.\n\n"
+                    "Убедитесь, что вы заполнили все поля в правильном порядке:\n"
+                    "1. Название изделия\n"
+                    "2. Цвет изделия\n"
+                    "3. Количество (шт)\n"
+                    "4. Склады и размеры\n"
+                    "5. Дата отправки\n"
+                    "6. Дата возможного прибытия"
+                )
+            bot.reply_to(message, error_msg)
+            user_data.add_message_to_context(user_id, "assistant", error_msg)
+            return
+
+        # Extract fields
+        product_name = lines[0]
+        product_color = lines[1]
+        total_amount_str = lines[2]
+        warehouse_sizes_str = lines[3]
+        shipment_date_str = lines[4]
+        estimated_arrival_str = lines[5]
+        
+        # Convert total_amount to int for validation
+        if not validate_amount(total_amount_str):
+            bot.reply_to(message, "❌ Неверное количество. Введите положительное число.")
+            return
+        
+        total_amount = int(total_amount_str)
+        
+        # Validate and save
+        validation_errors = validate_extracted_data(
+            product_name, product_color, total_amount,
+            warehouse_sizes_str, shipment_date_str, estimated_arrival_str
+        )
+        
+        if validation_errors:
+            error_message = "❌ Найдены следующие ошибки:\n\n" + "\n".join(validation_errors)
+            error_message += "\n\nПожалуйста, исправьте ошибки и отправьте данные заново."
+            bot.reply_to(message, error_message)
+            user_data.add_message_to_context(user_id, "assistant", error_message)
+            return
+        
+        # Save data
+        save_data_to_sheets(bot, message, user_id, product_name, product_color,
+                           total_amount, warehouse_sizes_str,
+                           standardize_date(shipment_date_str),
+                           standardize_date(estimated_arrival_str))
 
     def notify_admins_about_new_record(bot, message, row_index):
         """Notify all admins about a new record being added to Google Sheets"""
