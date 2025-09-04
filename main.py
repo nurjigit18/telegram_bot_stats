@@ -5,7 +5,6 @@ import threading
 import time
 import signal
 import traceback
-import fcntl
 import gc
 import psutil
 import pytz
@@ -72,74 +71,74 @@ state = BotState()
 
 def acquire_lock():
     """
-    Ensure only one instance of the bot is running using file locking.
+    Ensure only one instance of the bot is running using an atomic PID file.
     Returns True if lock acquired, False otherwise.
+    Cross-platform: works on Linux/Windows/macOS.
     """
     try:
-        # Check if the lock file exists and if the process is still running
+        # If the lock file exists, check if the recorded PID is still alive
         if os.path.exists(LOCK_FILE):
             try:
                 with open(LOCK_FILE, 'r') as f:
-                    old_pid = int(f.read().strip())
+                    old_pid_str = f.read().strip()
+                old_pid = int(old_pid_str)
+            except Exception:
+                old_pid = None
 
-                # Check if process with this PID exists
+            if old_pid and psutil.pid_exists(old_pid) and old_pid != os.getpid():
+                logger.error(f"Another instance is already running (PID: {old_pid})")
+                return False
+            else:
+                # Stale or invalid lock; remove it
                 try:
-                    os.kill(old_pid, 0)
-                    # If we get here, process exists
-                    logger.error(f"Another instance is already running (PID: {old_pid})")
-                    return False
-                except OSError:
-                    # Process doesn't exist, we can remove the stale lock
-                    logger.warning(f"Removing stale lock file from PID {old_pid}")
                     os.remove(LOCK_FILE)
-            except (ValueError, FileNotFoundError):
-                # Invalid PID or file disappeared, remove it
-                if os.path.exists(LOCK_FILE):
-                    os.remove(LOCK_FILE)
+                    logger.warning(f"Removed stale lock file (PID was: {old_pid})")
+                except FileNotFoundError:
+                    pass
 
-        # Open the lock file
-        lock_file_fd = open(LOCK_FILE, 'w')
+        # Atomically create the lock file; fails if it already exists
+        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+        fd = os.open(LOCK_FILE, flags)
+        # Write our PID
+        with os.fdopen(fd, 'w') as lock_fp:
+            lock_fp.write(str(os.getpid()))
+            lock_fp.flush()
 
-        # Try to acquire an exclusive lock (non-blocking)
-        fcntl.flock(lock_file_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-
-        # Store the file descriptor to keep the lock
-        state.lock_file_fd = lock_file_fd
-
-        # Write PID to lock file
-        lock_file_fd.write(str(os.getpid()))
-        lock_file_fd.flush()
+        # Keep a handle so we know we created it (not strictly required, but useful)
+        state.lock_file_created = True
 
         logger.info(f"Lock acquired by PID {os.getpid()}")
         return True
 
-    except IOError:
-        # Another instance has the lock
+    except FileExistsError:
+        # Race condition: file was created by another process just now
         try:
             with open(LOCK_FILE, 'r') as f:
                 pid = f.read().strip()
-                logger.error(f"Another instance is already running (PID: {pid})")
-        except:
-            logger.error("Another instance is already running")
+            logger.error(f"Another instance is already running (PID: {pid})")
+        except Exception:
+            logger.error("Another instance is already running (unknown PID)")
+        return False
 
+    except Exception as e:
+        logger.error(f"Failed to acquire lock: {e}")
         return False
 
 def release_lock():
-    """Release the lock file"""
-    if hasattr(state, 'lock_file_fd'):
-        try:
-            # Release the lock and close the file
-            fcntl.flock(state.lock_file_fd, fcntl.LOCK_UN)
-            state.lock_file_fd.close()
-
-            # Remove the lock file
-            if os.path.exists(LOCK_FILE):
+    """Release the PID-file lock."""
+    try:
+        # Only remove if we created it
+        if getattr(state, "lock_file_created", False):
+            try:
                 os.remove(LOCK_FILE)
-
-            logger.info("Lock released and file removed")
-        except Exception as e:
-            logger.error(f"Error releasing lock: {e}")
-
+                logger.info("Lock file removed")
+            except FileNotFoundError:
+                pass
+            finally:
+                state.lock_file_created = False
+    except Exception as e:
+        logger.error(f"Error releasing lock: {e}")
+        
 def get_memory_usage():
     """Get current memory usage in MB"""
     process = psutil.Process(os.getpid())

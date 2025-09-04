@@ -1,451 +1,406 @@
+# save.py — warehouse-centric shipment flow replacing previous single-message save handler
+# -*- coding: utf-8 -*-
+
 from telebot import TeleBot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-from constants import PROMPTS, STEPS
 from models.user_data import user_data
-from utils.validators import validate_date, validate_amount, validate_size_amounts, parse_size_amounts, standardize_date, validate_warehouse_sizes
 from utils.google_sheets import save_to_sheets, GoogleSheetsManager
+from utils.validators import validate_date, standardize_date
 from config import ADMIN_USER_USERNAMES
 from datetime import datetime
-import logging
-import re
 import pytz
+import re
+import logging
 
 logger = logging.getLogger(__name__)
 
-def parse_warehouse_sizes(warehouse_sizes_str):
-    """
-    Parse warehouse and sizes string into structured data with robust input handling
-    
-    Formats supported:
-    - Single warehouse: "Казань: S-50 M-25 L-25" or "Казань:S-50 M-25 L-25"
-    - Multiple warehouses: "Казань: S-30 M-40 , Москва: L-50 XL-80" or "Казань:S-30 M-40,Москва:L-50 XL-80"
-    - Handles missing spaces after colons and commas
-    - Handles missing spaces between sizes
-    - Case insensitive size names
-    - Handles mixed Latin/Cyrillic characters in warehouse names
-    
-    Returns: List of tuples [(warehouse_name, {size: quantity})]
-    """
-    try:
-        # Step 1: Clean and normalize the input string
-        cleaned_str = normalize_warehouse_input(warehouse_sizes_str)
-        
-        warehouse_data = []
-        
-        # Step 2: Split by comma for multiple warehouses (now properly spaced)
-        warehouse_parts = [part.strip() for part in cleaned_str.split(',') if part.strip()]
-        
-        for warehouse_part in warehouse_parts:
-            if ':' not in warehouse_part:
-                return None  # Invalid format
-            
-            # Step 3: Split warehouse name and sizes
-            warehouse_name, sizes_str = warehouse_part.split(':', 1)
-            warehouse_name = warehouse_name.strip()
-            sizes_str = sizes_str.strip()
-            
-            # Step 4: Parse sizes with robust splitting
-            sizes = parse_sizes_string(sizes_str)
-            if not sizes:
-                return None  # Invalid sizes format
-            
-            warehouse_data.append((warehouse_name, sizes))
-        
-        return warehouse_data if warehouse_data else None
-        
-    except Exception as e:
-        logger.error(f"Error parsing warehouse sizes: {e}")
-        return None
-    
-def normalize_warehouse_input(input_str):
-    """
-    Normalize warehouse input string by adding missing spaces and cleaning format
-    Handles both Latin and Cyrillic characters with improved regex patterns
-    """
-    # Remove extra whitespace
-    cleaned = re.sub(r'\s+', ' ', input_str.strip())
-    
-    # Add space after colon if missing: "Склад:размеры" -> "Склад: размеры"
-    # Handle both Latin and Cyrillic characters
-    cleaned = re.sub(r'([^\s:]):([^\s])', r'\1: \2', cleaned)
-    
-    # Add space after comma if missing: "размеры,Склад" -> "размеры, Склад"
-    cleaned = re.sub(r'([^\s,]),([^\s])', r'\1, \2', cleaned)
-    
-    # Fix cases where sizes are stuck together with warehouse names or other sizes
-    # This handles cases like "Tyлa: XS-47 S-80" or "XS-52S-37M-34"
-    # First, handle sizes stuck to warehouse names after colon
-    cleaned = re.sub(r'(:)([A-Za-zА-Яа-я0-9]+)(-\d+)([A-Za-zА-Яа-я0-9]+)(-\d+)', r'\1\2\3 \4\5', cleaned)
-    
-    # Then handle multiple consecutive stuck sizes
-    # Keep applying the fix until no more changes are made
-    prev_cleaned = ""
-    max_iterations = 20  # Prevent infinite loops
-    iteration = 0
-    
-    while prev_cleaned != cleaned and iteration < max_iterations:
-        prev_cleaned = cleaned
-        # Handle pattern like "XS-52S-37M-34L-36XL-20"
-        cleaned = re.sub(r'([A-Za-zА-Яа-я0-9]+)-(\d+)([A-Za-zА-Яа-я0-9]+)-(\d+)', r'\1-\2 \3-\4', cleaned)
-        iteration += 1
-    
-    return cleaned
+# ===================== Parsing utilities (colors → sizes) ====================
+SIZE_MAP = {
+    'XS':'XS','S':'S','M':'M','L':'L','XL':'XL',
+    '2XL':'2XL','3XL':'3XL','4XL':'4XL','5XL':'5XL','6XL':'6XL','7XL':'7XL',
+    # Cyrillic equivalents
+    'ХС':'XS','С':'S','М':'M','Л':'L','ХЛ':'XL',
+    '2ХЛ':'2XL','3ХЛ':'3XL','4ХЛ':'4XL','5ХЛ':'5XL','6ХЛ':'6XL','7ХЛ':'7XL',
+    # Common mixes
+    'XС':'XS','ХS':'XS','XЛ':'XL', 'XXL':'XL','XXXL':'3XL'
+}
 
-def parse_sizes_string(sizes_str):
+DASH_PATTERN = r"[-–—:]"
+SIZE_PAIR_RE = re.compile(rf"([A-Za-zА-Яа-я0-9]+)\s*{DASH_PATTERN}\s*(\d+)")
+COLOR_BLOCK_RE = re.compile(r"(?P<color>[^,:;\n]+?)\s*:\s*(?P<sizes>.*?)(?=(?:[^,:;\n]+?\s*:)|$)")
+
+
+def _normalize_colors_input(s: str) -> str:
+    if not s:
+        return ''
+    s = s.strip()
+    s = re.sub(r"[ \t]+", " ", s)
+    s = re.sub(r"\s*,\s*", ", ", s)
+    s = re.sub(r"\s*;\s*", "; ", s)
+    s = s.replace('—','-').replace('–','-')
+    # Unstick pairs like "S-10M-20" -> "S-10 M-20"
+    prev = None
+    for _ in range(20):
+        if prev == s:
+            break
+        prev = s
+        s = re.sub(r"([A-Za-zА-Яа-я0-9]+)-(\d+)([A-Za-zА-Яа-я0-9]+)-(\d+)", r"\1-\2 \3-\4", s)
+    return s
+
+
+def _canon_size(raw: str):
+    key = raw.strip().upper()
+    return SIZE_MAP.get(key, key if key in SIZE_MAP.values() else None)
+
+
+def parse_colors_and_sizes(input_text: str):
+    """Parse "Цвет: size-qty …, Цвет2: …" into { color: {size: qty} }.
+    Returns (data: dict, errors: list[str], normalized_preview: str)
     """
-    Parse sizes string into dictionary with robust handling.
-    Handles formats like: "S-50 M-25 L-25" or "s-50m-25l-25" or "S-50M-25L-25"
-    Supports both Latin and Cyrillic characters, case insensitive.
-    """
-    sizes = {}
+    errors = []
+    if not input_text or not input_text.strip():
+        return None, ["Строка с расцветками пуста."], ''
 
-    # Regex finds all size-quantity pairs like 'xs-52', '2xl-1', etc.
-    pattern = r'([a-zA-Zа-яА-Я0-9]+)-(\d+)'
-    matches = re.findall(pattern, sizes_str)
-    if not matches:
-        return None
+    text = _normalize_colors_input(input_text)
+    result = {}
 
-    valid_sizes = {
-        # English sizes
-        'XS': 'XS', 'S': 'S', 'M': 'M', 'L': 'L', 'XL': 'XL',
-        '2XL': '2XL', '3XL': '3XL', '4XL': '4XL', '5XL': '5XL',
-        '6XL': '6XL', '7XL': '7XL',
-        # Russian equivalents
-        'ХС': 'XS', 'С': 'S', 'М': 'M', 'Л': 'L', 'ХЛ': 'XL',
-        '2ХЛ': '2XL', '3ХЛ': '3XL', '4ХЛ': '4XL', '5ХЛ': '5XL',
-        '6ХЛ': '6XL', '7ХЛ': '7XL',
-        # Mixed common variations
-        'XС': 'XS', 'СS': 'S', 'ХS': 'XS', 'XЛ': 'XL', 'ЛL': 'L',
-        'XXL': 'XL', 'XXXL': '3XL'
-    }
+    for m in COLOR_BLOCK_RE.finditer(text):
+        color = m.group('color').strip()
+        sizes_str = m.group('sizes').strip()
+        if not color:
+            errors.append("Найден пустой заголовок расцветки (до двоеточия).")
+            continue
 
-    for size, qty in matches:
-        size = size.strip().upper()
-        if size in valid_sizes:
-            std_size = valid_sizes[size]
+        size_map = {}
+        for size_raw, qty_raw in SIZE_PAIR_RE.findall(sizes_str):
+            c = _canon_size(size_raw)
+            if not c:
+                errors.append(f"Неизвестный размер ‘{size_raw}’ у расцветки ‘{color}’. Пропущено.")
+                continue
             try:
-                quantity = int(qty)
-                if quantity > 0:
-                    sizes[std_size] = quantity
+                q = int(qty_raw)
+                if q <= 0:
+                    errors.append(f"Невалидное количество для {c} у ‘{color}’: {qty_raw}. Пропущено.")
+                    continue
             except ValueError:
-                continue  # skip invalid quantities
+                errors.append(f"Невалидное количество для {c} у ‘{color}’: {qty_raw}. Пропущено.")
+                continue
+            size_map[c] = size_map.get(c, 0) + q
+
+        if not size_map:
+            errors.append(f"Не найдено валидных пар размер-количество для расцветки ‘{color}’.")
         else:
-            continue  # skip unknown sizes
+            result[color] = size_map
 
-    return sizes if sizes else None
+    if not result:
+        return None, errors or ["Не удалось распознать ни одной расцветки."], ''
+
+    # Build normalized preview
+    def size_order_key(k: str):
+        base = {"XS":0,"S":1,"M":2,"L":3,"XL":4}
+        if k in base: return (0, base[k])
+        if k.endswith("XL") and k[:-2].isdigit():
+            return (1, int(k[:-2]))
+        return (2, 0)
+
+    parts = []
+    for color, smap in result.items():
+        pairs = [f"{k}-{smap[k]}" for k in sorted(smap.keys(), key=size_order_key)]
+        parts.append(f"{color}: " + " ".join(pairs))
+    preview = ", ".join(parts)
+    return result, errors, preview
 
 
-def validate_warehouse_sizes_enhanced(warehouse_sizes_str):
-    """
-    Enhanced validation for warehouse sizes string with better error reporting
-    """
-    if not warehouse_sizes_str or not warehouse_sizes_str.strip():
-        return False, "Строка складов и размеров пуста"
-    
+# ===================== Conversation state keys ==============================
+STATE_KEY = "shipment_state"
+STATE_STEP = "step"
+STATE_WAREHOUSE = "warehouse"
+STATE_MODELS = "models"            # list[{model_name, colors{color:{size:qty}}}]
+STATE_SHIP_DATE = "ship_date"
+STATE_ETA_DATE = "eta_date"
+CURRENT_MODEL = "current_model"
+
+STEP_WAREHOUSE = "ask_warehouse"
+STEP_MODEL = "ask_model"
+STEP_COLORS = "ask_colors"
+STEP_SHIPDATE = "ask_shipdate"
+STEP_ETADATE = "ask_etadate"
+STEP_CONFIRM = "confirm"
+
+
+# ===================== UI helpers ==========================================
+
+def _kb_confirm():
+    m = InlineKeyboardMarkup()
+    m.add(InlineKeyboardButton("💾 Сохранить данные", callback_data="ship_save_all"))
+    m.add(InlineKeyboardButton("➕ Добавить модель", callback_data="ship_add_model"))
+    m.add(InlineKeyboardButton("❌ Отмена", callback_data="ship_cancel"))
+    return m
+
+
+def _format_confirmation(state: dict) -> str:
+    wh = state.get(STATE_WAREHOUSE, "—")
+    ship = state.get(STATE_SHIP_DATE, "—")
+    eta = state.get(STATE_ETA_DATE, "—")
+
+    lines = [
+        "Проверьте правильность данных:",
+        f"Склад: {wh}",
+    ]
+
+    total_all = 0
+
+    for item in state.get(STATE_MODELS, []):
+        model = item.get("model_name", "—")
+        colors = item.get("colors", {})
+        color_parts = []
+        for color, sizes in colors.items():
+            qty = sum(sizes.values())
+            total_all += qty
+            spairs = " ".join([f"{k}-{v}" for k, v in sizes.items()])
+            color_parts.append(f"{color}: {spairs}")
+        color_preview = ", ".join(color_parts) if color_parts else "—"
+        lines.append(f"Модель: {model}")
+        lines.append(f"Расцветки и размеры: {color_preview}")
+        lines.append("")
+
+    lines.append(f"📊 Общее количество: {total_all} шт")
+    lines.append(f"Дата отправки: {ship}")
+    lines.append(f"Дата прибытия (примерное): {eta}")
+
+    return "\n".join(lines)
+
+
+# ===================== Admin notification ==================================
+
+def _notify_admins_about_new_record(bot: TeleBot, row_index: int, source_username: str):
     try:
-        # Try to parse the warehouse sizes
-        parsed_data = parse_warehouse_sizes(warehouse_sizes_str)
-        if parsed_data is None:
-            return False, "Не удалось разобрать формат складов и размеров"
-        if len(parsed_data) == 0:
-            return False, "Не найдено ни одного склада"
-        
-        # Additional validation: check if all warehouses have valid sizes
-        for warehouse_name, sizes in parsed_data:
-            if not sizes:
-                return False, f"Склад '{warehouse_name}' не имеет допустимых размеров"
-        
-        return True, None
+        sheets_manager = GoogleSheetsManager.get_instance()
+        ws = sheets_manager.get_main_worksheet()
+        record = ws.row_values(row_index)
+
+        product_name = record[3] if len(record) > 3 else "Unknown product"
+        product_color = record[7] if len(record) > 7 else "Unknown color"
+        shipment_date = record[4] if len(record) > 4 else "Unknown date"
+        estimated_arrival = record[5] if len(record) > 5 else "Unknown date"
+        total_amount = record[8] if len(record) > 8 else "Unknown amount"
+        warehouse_name = record[9] if len(record) > 9 else "Unknown warehouse"
+
+        size_mapping = {10: 'XS', 11: 'S', 12: 'M', 13: 'L', 14: 'XL', 15: '2XL', 16: '3XL', 17: '4XL', 18: '5XL', 19: '6XL', 20: '7XL'}
+        active_sizes = []
+        for col_idx, size_name in size_mapping.items():
+            if len(record) > col_idx and record[col_idx]:
+                qty = str(record[col_idx]).strip()
+                if qty and qty != '0':
+                    active_sizes.append(f"{size_name}({qty})")
+        sizes_text = ", ".join(active_sizes) if active_sizes else "—"
+
+        text = (
+            f"🆕 Новая запись добавлена в таблицу\n\n"
+            f"Пользователь: @{source_username}\n"
+            f"Изделие: {product_name}\n"
+            f"Цвет: {product_color}\n"
+            f"Дата отправки: {shipment_date}\n"
+            f"Примерная дата прибытия: {estimated_arrival}\n"
+            f"Склад: {warehouse_name}\n"
+            f"Общее количество: {total_amount}\n"
+            f"Размеры: {sizes_text}\n"
+            f"Дата добавления: {datetime.now(pytz.timezone('Asia/Bishkek')).strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+
+        # Resolve admin chat ids from Users sheet by username
+        try:
+            users_ws = sheets_manager.get_users_worksheet()
+            all_users = users_ws.get_all_values()
+        except Exception:
+            all_users = []
+
+        for admin_username in ADMIN_USER_USERNAMES:
+            admin_chat_id = None
+            for row in all_users[1:]:
+                if len(row) > 1 and row[1] == admin_username:
+                    try:
+                        admin_chat_id = int(row[0])
+                        break
+                    except Exception:
+                        pass
+            if admin_chat_id:
+                try:
+                    bot.send_message(admin_chat_id, text)
+                except Exception as e:
+                    logger.warning(f"Failed to notify admin {admin_username}: {e}")
     except Exception as e:
-        return False, f"Ошибка при разборе: {str(e)}"
+        logger.error(f"Admin notify error: {e}")
+
+
+# ===================== Main handler (replaces previous /save) ===============
 
 def setup_save_handler(bot: TeleBot):
     @bot.message_handler(commands=['save'])
-    def start_save_process(message):
-        """Start the product data collection process with single message input"""
-        user_id = message.from_user.id
+    def start_flow(message):
+        uid = message.from_user.id
+        user_data.initialize_user(uid)
+        st = {
+            STATE_STEP: STEP_WAREHOUSE,
+            STATE_WAREHOUSE: None,
+            STATE_MODELS: [],
+            STATE_SHIP_DATE: None,
+            STATE_ETA_DATE: None,
+        }
+        user_data.update_user_data(uid, STATE_KEY, st)
+        bot.reply_to(message, "Пожалуйста, введите склад:")
 
-        # Initialize user data
-        user_data.initialize_user(user_id)
-        user_data.set_current_action(user_id, "saving_new_single")
-        user_data.initialize_form_data(user_id)
+    @bot.message_handler(func=lambda m: user_data.get_user_data(m.from_user.id) and user_data.get_user_data(m.from_user.id).get(STATE_KEY) is not None)
+    def handle_text(message):
+        uid = message.from_user.id
+        st = user_data.get_user_data(uid).get(STATE_KEY, {})
+        step = st.get(STATE_STEP)
+        text = (message.text or '').strip()
 
-        # Send sample format
-        sample_format = (
-            "Заполните все данные одним сообщением в следующем формате:\n\n"
-            "📋 Образец заполнения:\n"
-            "Название изделия:\n"
-            "Цвет изделия:\n"
-            "Количество (шт):\n"
-            "Склады и размеры:\n"
-            "Дата отправки (дд/мм/гггг):\n"
-            "Дата возможного прибытия (дд/мм/гггг):\n\n"
-            "💡 Примеры:\n\n"
-            "🔹 Один склад:\n"
-            "рубашка\n"
-            "красный\n"
-            "100\n"
-            "Казань: S-50 M-25 L-25\n"
-            "12.12.2021\n"
-            "15/12/2021\n\n"
-            "🔹 Несколько складов:\n"
-            "рубашка\n"
-            "синий\n"
-            "200\n"
-            "Казань: S-30 M-40 , Москва: L-50 XL-80\n"
-            "12.12.2021\n"
-            "15/12/2021\n\n"
-            "📝 Формат складов и размеров:\n"
-            "• Один склад: Склад: размер-количество размер-количество\n"
-            "• Несколько складов: Склад1: размеры , Склад2: размеры\n"
-            "• Разделитель складов: , (запятая)\n"
-            "• Разделитель размеров: - (дефис)\n"
-            "• Поддерживаются размеры: XS, S, M, L, XL, 2XL, 3XL, 4XL, 5XL, 6XL, 7XL\n\n"
-            "Нажмите /cancel для отмены заполнения."
-        )
-        bot.reply_to(message, sample_format)
-
-    @bot.message_handler(func=lambda message:
-        user_data.has_user(message.from_user.id) and
-        user_data.get_current_action(message.from_user.id) == "saving_new_single")
-    def handle_single_save_input(message):
-        """Handle single message input for all form data"""
-        if message.text.startswith('/'):  # Skip if it's a command
-            if message.text == '/cancel':
-                user_data.clear_user_data(message.from_user.id)
-                bot.reply_to(message, "✖️ Процесс заполнения отменен.")
+        # Allow cancel
+        if text.lower() in {"/cancel", "отмена"}:
+            user_data.update_user_data(uid, STATE_KEY, None)
+            bot.reply_to(message, "✖️ Процесс отменён.")
             return
 
-        user_id = message.from_user.id
-        
-        try:
-            # Parse the input message
-            lines = [line.strip() for line in message.text.strip().split('\n') if line.strip()]
-            
-            # Check if we have the correct number of lines
-            expected_fields = 6
-            if len(lines) != expected_fields:
-                error_msg = (
-                    f"❌ Неверное количество полей. Ожидается {expected_fields} строк, получено {len(lines)}.\n\n"
-                    "Убедитесь, что вы заполнили все поля в правильном порядке:\n"
-                    "1. Название изделия\n"
-                    "2. Цвет изделия\n"
-                    "3. Количество (шт)\n"
-                    "4. Склады и размеры\n"
-                    "5. Дата отправки\n"
-                    "6. Дата возможного прибытия"
-                )
-                bot.reply_to(message, error_msg)
+        if step == STEP_WAREHOUSE:
+            if not text:
+                bot.reply_to(message, "Склад не может быть пустым. Введите склад:")
                 return
+            st[STATE_WAREHOUSE] = text
+            st[STATE_STEP] = STEP_MODEL
+            user_data.update_user_data(uid, STATE_KEY, st)
+            bot.reply_to(message, "Пожалуйста, введите название модели в пакете (только одну за раз):")
+            return
 
-            # Extract and validate each field
-            product_name = lines[0]
-            product_color = lines[1]
-            total_amount_str = lines[2]
-            warehouse_sizes_str = lines[3]
-            shipment_date_str = lines[4]
-            estimated_arrival_str = lines[5]
-
-            errors = []
-
-            # Validate product name
-            if not product_name:
-                errors.append("• Название изделия не может быть пустым")
-
-            # Validate product color
-            if not product_color:
-                errors.append("• Цвет изделия не может быть пустым")
-
-            # Validate total amount
-            if not validate_amount(total_amount_str):
-                errors.append("• Неверное количество. Введите положительное число")
-            else:
-                total_amount = int(total_amount_str)
-
-            # Validate warehouse and sizes format
-            is_valid, error_msg = validate_warehouse_sizes_enhanced(warehouse_sizes_str)
-            if not is_valid:
-                errors.append(f"• {error_msg}")
-            else:
-                warehouse_data = parse_warehouse_sizes(warehouse_sizes_str)
-                if not warehouse_data:
-                    errors.append("• Ошибка при разборе складов и размеров. Проверьте названия размеров и количества")
-                else:
-                    # Validate that total amounts match
-                    calculated_total = sum(sum(sizes.values()) for _, sizes in warehouse_data)
-                    if calculated_total != total_amount:
-                        errors.append(f"• Сумма размеров ({calculated_total}) не совпадает с общим количеством ({total_amount})")
-                        
-                        # Provide detailed breakdown for debugging
-                        breakdown = []
-                        for warehouse_name, sizes in warehouse_data:
-                            warehouse_total = sum(sizes.values())
-                            size_details = ", ".join([f"{size}:{qty}" for size, qty in sizes.items()])
-                            breakdown.append(f"  {warehouse_name}: {size_details} = {warehouse_total}")
-                        
-                        errors.append("Разбивка по складам:\n" + "\n".join(breakdown))
-
-            # Validate shipment date
-            if not validate_date(shipment_date_str):
-                errors.append("• Неверный формат даты отправки. Используйте дд/мм/гггг или дд.мм.гггг")
-            else:
-                shipment_date = standardize_date(shipment_date_str)
-
-            # Validate estimated arrival date
-            if not validate_date(estimated_arrival_str):
-                errors.append("• Неверный формат даты прибытия. Используйте дд/мм/гггг или дд.мм.гггг")
-            else:
-                estimated_arrival = standardize_date(estimated_arrival_str)
-
-            # If there are validation errors, send them back
-            if errors:
-                error_message = "❌ Найдены следующие ошибки:\n\n" + "\n".join(errors)
-                error_message += "\n\nПожалуйста, исправьте ошибки и отправьте данные заново."
-                bot.reply_to(message, error_message)
+        if step == STEP_MODEL:
+            if not text:
+                bot.reply_to(message, "Название модели не может быть пустым. Введите модель:")
                 return
+            st[CURRENT_MODEL] = text
+            st[STATE_STEP] = STEP_COLORS
+            user_data.update_user_data(uid, STATE_KEY, st)
+            bot.reply_to(message, "Пожалуйста введите размеры на каждую расцветку, пример: Шоколад: S-10 XL-10 3XL-20, Красный: M-10 xl-20")
+            return
 
-            # If validation passed, save the data
-            # For multiple warehouses, we'll create multiple records
-            saved_records = 0
-            warehouse_records = []  # Keep track of what was saved for confirmation
-            
-            for warehouse_name, sizes in warehouse_data:
-                # Clear previous form data to avoid contamination between warehouses
-                user_data.initialize_form_data(user_id)
-                
-                # Set the basic form data for this specific warehouse
-                user_data.update_form_data(user_id, 'product_name', product_name)
-                user_data.update_form_data(user_id, 'product_color', product_color)
-                user_data.update_form_data(user_id, 'total_amount', sum(sizes.values()))  # Amount for this warehouse only
-                user_data.update_form_data(user_id, 'warehouse', warehouse_name)
-                user_data.update_form_data(user_id, 'shipment_date', shipment_date)
-                user_data.update_form_data(user_id, 'estimated_arrival', estimated_arrival)
+        if step == STEP_COLORS:
+            colors, errs, preview = parse_colors_and_sizes(text)
+            if not colors:
+                err = "\n".join(["❌ Ошибки распознавания:"] + errs + ["\nПовторите ввод расцветок и размеров по примеру."])
+                bot.reply_to(message, err)
+                return
+            st.setdefault(STATE_MODELS, []).append({
+                "model_name": st.get(CURRENT_MODEL),
+                "colors": colors,
+            })
+            if not st.get(STATE_SHIP_DATE):
+                st[STATE_STEP] = STEP_SHIPDATE
+                user_data.update_user_data(uid, STATE_KEY, st)
+                bot.reply_to(message, "Введите дату отправки, пример (дд.мм.гг или дд/мм/гг):")
+                return
+            st[STATE_STEP] = STEP_CONFIRM
+            user_data.update_user_data(uid, STATE_KEY, st)
+            bot.send_message(message.chat.id, _format_confirmation(st), reply_markup=_kb_confirm())
+            return
 
-                # Add size amounts to form data for this specific warehouse
-                for size_key, size_value in sizes.items():
-                    user_data.update_form_data(user_id, size_key, size_value)
+        if step == STEP_SHIPDATE:
+            if not validate_date(text):
+                bot.reply_to(message, "❌ Некорректный формат даты. Используйте дд.мм.гг или дд/мм/гг")
+                return
+            st[STATE_SHIP_DATE] = standardize_date(text)
+            st[STATE_STEP] = STEP_ETADATE
+            user_data.update_user_data(uid, STATE_KEY, st)
+            bot.reply_to(message, "Введите примерную дату отправки, пример (дд.мм.гг или дд/мм/гг):")
+            return
 
-                # Save to Google Sheets for this warehouse
+        if step == STEP_ETADATE:
+            if not validate_date(text):
+                bot.reply_to(message, "❌ Некорректный формат даты. Используйте дд.мм.гг или дд/мм/гг")
+                return
+            st[STATE_ETA_DATE] = standardize_date(text)
+            st[STATE_STEP] = STEP_CONFIRM
+            user_data.update_user_data(uid, STATE_KEY, st)
+            bot.send_message(message.chat.id, _format_confirmation(st), reply_markup=_kb_confirm())
+            return
+
+        if step == STEP_CONFIRM:
+            bot.send_message(message.chat.id, "Пожалуйста, используйте кнопки ниже.", reply_markup=_kb_confirm())
+            return
+
+    @bot.callback_query_handler(func=lambda c: c.data in {"ship_save_all","ship_add_model","ship_cancel"})
+    def on_cb(call):
+        uid = call.from_user.id
+        st = user_data.get_user_data(uid).get(STATE_KEY)
+        if not st:
+            bot.answer_callback_query(call.id)
+            try:
+                bot.edit_message_text("Сессия не найдена. Начните заново командой /save", call.message.chat.id, call.message.message_id)
+            except Exception:
+                bot.send_message(call.message.chat.id, "Сессия не найдена. Начните заново командой /save")
+            return
+
+        bot.answer_callback_query(call.id)
+        data = call.data
+
+        if data == "ship_cancel":
+            user_data.update_user_data(uid, STATE_KEY, None)
+            try:
+                bot.edit_message_text("✖️ Процесс отменён.", call.message.chat.id, call.message.message_id)
+            except Exception:
+                bot.send_message(call.message.chat.id, "✖️ Процесс отменён.")
+            return
+
+        if data == "ship_add_model":
+            st.pop(CURRENT_MODEL, None)
+            st[STATE_STEP] = STEP_MODEL
+            user_data.update_user_data(uid, STATE_KEY, st)
+            try:
+                bot.edit_message_text("Пожалуйста, введите название модели в пакете (только одну за раз):", call.message.chat.id, call.message.message_id)
+            except Exception:
+                bot.send_message(call.message.chat.id, "Пожалуйста, введите название модели в пакете (только одну за раз):")
+            return
+
+        if data == "ship_save_all":
+            try:
+                saved = 0
+                src_username = call.from_user.username or call.from_user.first_name or str(call.from_user.id)
+                for item in st.get(STATE_MODELS, []):
+                    model_name = item.get("model_name")
+                    for color, sizes in item.get("colors", {}).items():
+                        total_amount = sum(sizes.values())
+                        # Prepare form_data for save_to_sheets
+                        user_data.initialize_form_data(uid)
+                        user_data.update_form_data(uid, 'product_name', model_name)
+                        user_data.update_form_data(uid, 'product_color', color)
+                        user_data.update_form_data(uid, 'total_amount', total_amount)
+                        user_data.update_form_data(uid, 'warehouse', st.get(STATE_WAREHOUSE))
+                        user_data.update_form_data(uid, 'shipment_date', st.get(STATE_SHIP_DATE))
+                        user_data.update_form_data(uid, 'estimated_arrival', st.get(STATE_ETA_DATE))
+                        for sz, qty in sizes.items():
+                            user_data.update_form_data(uid, sz, qty)
+                        row_index = save_to_sheets(bot, call.message)
+                        _notify_admins_about_new_record(bot, row_index, src_username)
+                        saved += 1
+
                 try:
-                    row_index = save_to_sheets(bot, message)
-                    saved_records += 1
-                    warehouse_records.append((warehouse_name, sizes))
-                    
-                    # Notify admins about the new record
-                    notify_admins_about_new_record(bot, message, row_index)
-                    
-                    logger.info(f"Successfully saved record for warehouse {warehouse_name} with sizes: {sizes}")
-                    
-                except Exception as e:
-                    logger.error(f"Error saving warehouse {warehouse_name}: {str(e)}")
-                    bot.reply_to(message, f"❌ Ошибка при сохранении данных для склада {warehouse_name}: {str(e)}")
-                    user_data.clear_user_data(user_id)
-                    return
-
-            # Show confirmation message with all saved data
-            warehouse_summary = []
-            for warehouse_name, sizes in warehouse_records:
-                size_str = ", ".join([f"{size}: {qty}" for size, qty in sizes.items()])
-                warehouse_summary.append(f"🏪 {warehouse_name}: {size_str}")
-
-            confirmation_msg = (
-                "✅ Данные успешно сохранены!\n\n"
-                f"📦 Название изделия: {product_name}\n"
-                f"🎨 Цвет изделия: {product_color}\n"
-                f"📊 Общее количество: {total_amount} шт\n"
-                + "\n".join(warehouse_summary) + "\n"
-                f"📅 Дата отправки: {shipment_date}\n"
-                f"📅 Дата прибытия: {estimated_arrival}\n\n"
-                f"Создано записей: {saved_records}"
-            )
-            bot.reply_to(message, confirmation_msg)
-
-            # Clear user data after successful completion
-            user_data.clear_user_data(user_id)
-
-        except Exception as e:
-            logger.error(f"Error in handle_single_save_input: {str(e)}")
-            bot.reply_to(message, f"❌ Произошла ошибка при обработке данных: {str(e)}. Попробуйте еще раз.")
-            user_data.clear_user_data(user_id)
-
-    def notify_admins_about_new_record(bot, message, row_index):
-        """Notify all admins about a new record being added to Google Sheets"""
-        try:
-            user_id = message.from_user.id
-            username = message.from_user.username or message.from_user.first_name or f"User ID: {user_id}"
-
-            # Get the sheet manager and worksheet
-            sheets_manager = GoogleSheetsManager.get_instance()
-            worksheet = sheets_manager.get_main_worksheet()
-
-            # Get the current record to include in the notification
-            record = worksheet.row_values(row_index)
-
-            # Extract relevant information
-            product_name = record[3] if len(record) > 3 else "Unknown product"
-            product_color = record[7] if len(record) > 7 else "Unknown color"
-            shipment_date = record[4] if len(record) > 4 else "Unknown date"
-            estimated_arrival = record[5] if len(record) > 5 else "Unknown date"
-            total_amount = record[8] if len(record) > 8 else "Unknown amount"
-            warehouse_name = record[9] if len(record) > 9 else "Unknown warehouse"
-            
-            # Extract sizes and create compact display
-            size_mapping = {10: 'XS', 11: 'S', 12: 'M', 13: 'L', 14: 'XL', 15: '2XL', 16: '3XL', 17: '4XL', 18: '5XL', 19: '6XL', 20: '7XL'}
-            active_sizes = []
-
-            for col_idx, size_name in size_mapping.items():
-                if len(record) > col_idx and record[col_idx]:
-                    qty = str(record[col_idx]).strip()
-                    if qty and qty != '0':
-                        active_sizes.append(f"{size_name}({qty})")
-
-            sizes_text = ", ".join(active_sizes) if active_sizes else "—"
-
-            notification_text = (
-                f"🆕 Новая запись добавлена в таблицу\n\n"
-                f"Пользователь: @{username}\n"
-                f"Изделие: {product_name}\n"
-                f"Цвет: {product_color}\n"
-                f"Дата отправки: {shipment_date}\n"
-                f"Примерная дата прибытия: {estimated_arrival}\n"
-                f"Склад: {warehouse_name}\n"
-                f"Общее количество: {total_amount}\n"
-                f"Размеры: {sizes_text}\n"
-                f"Дата добавления: {datetime.now(pytz.timezone('Asia/Bishkek')).strftime('%Y-%m-%d %H:%M:%S')}"
-            )
-
-            # Send notification to each admin
-            for admin_username in ADMIN_USER_USERNAMES:
+                    bot.edit_message_text(f"✅ Данные сохранены. Создано записей: {saved}", call.message.chat.id, call.message.message_id)
+                except Exception:
+                    bot.send_message(call.message.chat.id, f"✅ Данные сохранены. Создано записей: {saved}")
+            except Exception as e:
+                logger.error(f"Error saving shipment: {e}")
                 try:
-                    # Get the admin's chat_id from the users worksheet
-                    users_worksheet = sheets_manager.get_users_worksheet()
-                    all_users = users_worksheet.get_all_values()
-
-                    # Find admin's chat_id by username
-                    admin_chat_id = None
-                    for user_row in all_users[1:]:  # Skip header
-                        if len(user_row) > 1 and user_row[1] == admin_username:
-                            admin_chat_id = int(user_row[0])
-                            break
-
-                    if admin_chat_id:
-                        bot.send_message(admin_chat_id, notification_text)
-                        logger.info(f"New record notification sent to admin {admin_username}")
-                    else:
-                        logger.warning(f"Admin {admin_username} not found in users worksheet")
-                except Exception as admin_error:
-                    logger.error(f"Failed to notify admin {admin_username}: {str(admin_error)}")
-        except Exception as e:
-            logger.error(f"Error notifying admins about new record: {str(e)}")
-            # This error shouldn't prevent the user from completing their task
-            # so we just log it and don't send any error message to the user
+                    bot.edit_message_text(f"❌ Ошибка при сохранении данных: {e}", call.message.chat.id, call.message.message_id)
+                except Exception:
+                    bot.send_message(call.message.chat.id, f"❌ Ошибка при сохранении данных: {e}")
+            finally:
+                user_data.update_user_data(uid, STATE_KEY, None)
+            return
 
     @bot.message_handler(commands=['cancel'])
     def cancel_save_process(message):
-        """Cancel the save process"""
-        user_id = message.from_user.id
-        if user_data.has_user(user_id):
-            user_data.clear_user_data(user_id)
-            bot.reply_to(message, "✖️ Процесс заполнения отменен.")
+        uid = message.from_user.id
+        if user_data.get_user_data(uid) and user_data.get_user_data(uid).get(STATE_KEY):
+            user_data.update_user_data(uid, STATE_KEY, None)
+            bot.reply_to(message, "✖️ Процесс отменён.")
         else:
             bot.reply_to(message, "Нет активного процесса для отмены.")
