@@ -228,7 +228,7 @@ def _notify_admins_about_new_record(bot: TeleBot, row_index: int, source_usernam
         text = (
             f"🆕 Новая запись добавлена в таблицу\n\n"
             f"Пользователь: @{source_username}\n"
-            f"Bag: {bag_id}\n"
+            f"Пакет: {bag_id}\n"
             f"Склад: {warehouse}\n"
             f"Изделие: {product_name}\n"
             f"Цвет: {color}\n"
@@ -338,7 +338,7 @@ def setup_save_handler(bot: TeleBot):
             if not st.get(STATE_SHIP_DATE):
                 st[STATE_STEP] = STEP_SHIPDATE
                 user_data.update_user_data(uid, STATE_KEY, st)
-                bot.reply_to(message, "Введите дату отправки, пример (дд.мм.гг или дд/мм/гг):")
+                bot.reply_to(message, "Введите дату отправки, пример (дд.мм.гг или дд/мм/гггг):")
                 return
             st[STATE_STEP] = STEP_CONFIRM
             user_data.update_user_data(uid, STATE_KEY, st)
@@ -347,7 +347,7 @@ def setup_save_handler(bot: TeleBot):
 
         if step == STEP_SHIPDATE:
             if not validate_date(text):
-                bot.reply_to(message, "❌ Некорректный формат даты. Используйте дд.мм.гг или дд/мм/гг")
+                bot.reply_to(message, "❌ Некорректный формат даты. Используйте дд.мм.гг или дд/мм/гггг")
                 return
             st[STATE_SHIP_DATE] = standardize_date(text)
             st[STATE_STEP] = STEP_ETADATE
