@@ -2,12 +2,13 @@ from telebot import TeleBot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from models.user_data import user_data
 from utils.google_sheets import GoogleSheetsManager
-import logging
+from utils.google_sheets import EXPECTED_HEADERS, SIZE_COLS
 from config import ADMIN_USER_USERNAMES
 from utils.keyboards import show_product_selection
 from datetime import datetime
 import math
 import pytz
+import logging
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +73,7 @@ def setup_status_handler(bot: TeleBot):
         
         # Add product buttons for current page
         for idx, record in page_records:
-            product_info = f"{record[3]} - {record[7]} ({record[4]})"  # product_name - color (date)
+            product_info = f"{record[5]} - {record[6]} ({record[4]}, {record[7]})"  # product_name - color (date)
             markup.add(InlineKeyboardButton(
                 text=product_info,
                 callback_data=f"view_status_{idx}"
@@ -211,27 +212,36 @@ def setup_status_handler(bot: TeleBot):
             sheets_manager = GoogleSheetsManager.get_instance()
             record = sheets_manager.get_main_worksheet().row_values(row_index)
 
-            # Check if status is empty
-            status = record[11] if len(record) > 11 and record[11] else "Статус не установлен"
+            hi = _header_index()
+            # Safe getters by header name
+            bag_id         = record[hi['bag_id']] if len(record) > hi['bag_id'] else "-"
+            warehouse      = record[hi['warehouse']] if len(record) > hi['warehouse'] else "-"
+            product_name   = record[hi['product_name']] if len(record) > hi['product_name'] else "-"
+            color          = record[hi['color']] if len(record) > hi['color'] else "-"
+            shipment_date  = record[hi['shipment_date']] if len(record) > hi['shipment_date'] else "-"
+            eta_date       = record[hi['estimated_arrival']] if len(record) > hi['estimated_arrival'] else "-"
+            actual_arrival = record[hi['actual_arrival']] if len(record) > hi['actual_arrival'] else ""
+            total_amount   = record[hi['total_amount']] if len(record) > hi['total_amount'] else "0"
+            status         = record[hi['Статус']] if len(record) > hi['Статус'] and record[hi['Статус']] else "Статус не установлен"
 
-            # Get sizes from column 10 (previously scattered across multiple columns)
-            sizes_data = record[10] if len(record) > 10 else "Не указано"
+            sizes_data = _sizes_compact(record)
 
             status_message = (
                 f"📦 Информация о заказе:\n\n"
-                f"Изделие: {record[3]}\n"
-                f"Цвет: {record[7]}\n"
-                f"Дата отправки: {record[4]}\n"
-                f"Ожидаемая дата прибытия: {record[5]}\n"
-                f"Фактическая дата прибытия: {record[6] or 'Не указано'}\n"
-                f"Склад: {record[9]}\n"
-                f"Общее количество: {record[8]} шт\n"
+                f"Номер пакета: {bag_id}\n"
+                f"Склад: {warehouse}\n"
+                f"Модель: {product_name}\n"
+                f"Цвет: {color}\n"
+                f"Дата отправки: {shipment_date}\n"
+                f"Ожидаемая дата прибытия: {eta_date}\n"
+                f"Фактическая дата прибытия: {actual_arrival or 'Не указано'}\n"
+                f"Общее количество: {total_amount} шт\n"
                 f"Размеры: {sizes_data}\n"
-                f"Статус: {status}"
+                f"Статус: {status}\n"
             )
 
             markup = InlineKeyboardMarkup()
-            markup.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"view_status_{row_index}"))  # Back to status options
+            markup.add(InlineKeyboardButton("⬅️ Назад", callback_data=f"view_status_{row_index}"))
 
             bot.edit_message_text(
                 status_message,
@@ -286,11 +296,13 @@ def setup_status_handler(bot: TeleBot):
 
             # Get the current record to include in the notification
             record = worksheet.row_values(row_index)
-            product_name = record[3] if len(record) > 3 else "Unknown product"
-            product_color = record[7] if len(record) > 7 else "Unknown color"
+            hi = _header_index()
+            product_name = record[hi['product_name']] if len(record) > hi['product_name'] else "Unknown product"
+            product_color = record[hi['color']] if len(record) > hi['color'] else "Unknown color"
 
             # Update status in column 12
-            worksheet.update_cell(row_index, 12, new_status)
+            status_col_1based = hi['Статус'] + 1
+            worksheet.update_cell(row_index, status_col_1based, new_status)
 
             # Prepare response for the user
             markup = InlineKeyboardMarkup()
@@ -337,3 +349,22 @@ def setup_status_handler(bot: TeleBot):
             bot.send_message(message.chat.id, "❌ Ошибка при обновлении статуса.")
             # Still clear the row index in case of error
             user_data.set_row_index(message.from_user.id, None)
+            
+    def _header_index():
+        """Map header name -> 0-based column index."""
+        return {name: i for i, name in enumerate(EXPECTED_HEADERS)}
+
+    def _sizes_compact(record: list[str]) -> str:
+        """Build 'XS-10 S-5 2XL-3' from the row values; skip zeros/empty."""
+        hi = _header_index()
+        parts = []
+        for k in SIZE_COLS:
+            idx = hi[k]
+            if len(record) > idx:
+                try:
+                    q = int(record[idx] or 0)
+                except Exception:
+                    q = 0
+                if q > 0:
+                    parts.append(f"{k}-{q}")
+        return " ".join(parts) if parts else "—"

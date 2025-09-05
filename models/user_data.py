@@ -1,30 +1,35 @@
 # models/user_data.py
 class UserData:
     def __init__(self):
-        self.data = {}  # Internal dictionary to store user data
+        self.data = {}
 
     def initialize_user(self, user_id):
-        """Initialize user data for a new session."""
         self.data[user_id] = {
             "current_step": 0,
             "current_action": None,
             "data": {}
         }
 
+    # keep SIZE_COLS here if you don't want an extra constants module
+    SIZE_COLS = ["XS", "S", "M", "L", "XL", "XXL", "2XL", "3XL", "4XL", "5XL", "6XL", "7XL"]
+
     def initialize_form_data(self, user_id):
-        """Initialize form data structure for a user."""
         if user_id in self.data:
-            self.data[user_id]["data"] = {
+            payload = {
+                "bag_id": None,
+                "warehouse": None,
                 "product_name": None,
+                "color": None,
                 "shipment_date": None,
                 "estimated_arrival": None,
-                "product_color": None,
-                "total_amount": None,
-                "warehouse": None,
-                "s_amount": None,
-                "m_amount": None,
-                "l_amount": None
+                "actual_arrival": "",
+                "total_amount": 0,
+                "status": "в обработке",
             }
+            # IMPORTANT: use self.SIZE_COLS (not bare SIZE_COLS)
+            for k in self.SIZE_COLS:
+                payload[k] = 0
+            self.data[user_id]["data"] = payload
 
     def update_form_data(self, user_id, field, value):
         """Update a specific field in the user's form data."""

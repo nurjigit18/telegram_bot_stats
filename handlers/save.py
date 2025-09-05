@@ -1,4 +1,4 @@
-# save.py — warehouse-centric shipment flow replacing previous single-message save handler
+# handlers/save.py — warehouse-centric shipment flow with bag_id and new columns
 # -*- coding: utf-8 -*-
 
 from telebot import TeleBot
@@ -6,23 +6,24 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from models.user_data import user_data
 from utils.google_sheets import save_to_sheets, GoogleSheetsManager
 from utils.validators import validate_date, standardize_date
-from config import ADMIN_USER_USERNAMES
 from datetime import datetime
 import pytz
 import re
 import logging
+import secrets
 
 logger = logging.getLogger(__name__)
 
 # ===================== Parsing utilities (colors → sizes) ====================
 SIZE_MAP = {
-    'XS':'XS','S':'S','M':'M','L':'L','XL':'XL',
+    'XS':'XS','S':'S','M':'M','L':'L','XL':'XL','XXL':'XXL',
     '2XL':'2XL','3XL':'3XL','4XL':'4XL','5XL':'5XL','6XL':'6XL','7XL':'7XL',
     # Cyrillic equivalents
     'ХС':'XS','С':'S','М':'M','Л':'L','ХЛ':'XL',
+    'ХХL':'XXL','ХXL':'XXL',  # tolerant XXL variants
     '2ХЛ':'2XL','3ХЛ':'3XL','4ХЛ':'4XL','5ХЛ':'5XL','6ХЛ':'6XL','7ХЛ':'7XL',
-    # Common mixes
-    'XС':'XS','ХS':'XS','XЛ':'XL', 'XXL':'XL','XXXL':'3XL'
+    # Optional synonym
+    'XXXL':'3XL'
 }
 
 DASH_PATTERN = r"[-–—:]"
@@ -54,9 +55,8 @@ def _canon_size(raw: str):
 
 
 def parse_colors_and_sizes(input_text: str):
-    """Parse "Цвет: size-qty …, Цвет2: …" into { color: {size: qty} }.
-    Returns (data: dict, errors: list[str], normalized_preview: str)
-    """
+    """Parse 'Цвет: size-qty …, Цвет2: …' into { color: {size: qty} }.
+       Returns (data: dict, errors: list[str], normalized_preview: str)"""
     errors = []
     if not input_text or not input_text.strip():
         return None, ["Строка с расцветками пуста."], ''
@@ -75,7 +75,7 @@ def parse_colors_and_sizes(input_text: str):
         for size_raw, qty_raw in SIZE_PAIR_RE.findall(sizes_str):
             c = _canon_size(size_raw)
             if not c:
-                errors.append(f"Неизвестный размер ‘{size_raw}’ у расцветки ‘{color}’. Пропущено.")
+                errors.append(f"Неизвестный размер ‘{size_raw}’ у ‘{color}’. Пропущено.")
                 continue
             try:
                 q = int(qty_raw)
@@ -88,7 +88,7 @@ def parse_colors_and_sizes(input_text: str):
             size_map[c] = size_map.get(c, 0) + q
 
         if not size_map:
-            errors.append(f"Не найдено валидных пар размер-количество для расцветки ‘{color}’.")
+            errors.append(f"Не найдено валидных пар размер-количество для ‘{color}’.")
         else:
             result[color] = size_map
 
@@ -96,20 +96,19 @@ def parse_colors_and_sizes(input_text: str):
         return None, errors or ["Не удалось распознать ни одной расцветки."], ''
 
     # Build normalized preview
-    def size_order_key(k: str):
-        base = {"XS":0,"S":1,"M":2,"L":3,"XL":4}
-        if k in base: return (0, base[k])
-        if k.endswith("XL") and k[:-2].isdigit():
+    order = {"XS":0,"S":1,"M":2,"L":3,"XL":4,"XXL":5}
+    def size_key(k: str):
+        if k in order: return (0, order[k])
+        if k.endswith("XL") and k[:-2].isdigit():  # 2XL..7XL
             return (1, int(k[:-2]))
         return (2, 0)
 
     parts = []
     for color, smap in result.items():
-        pairs = [f"{k}-{smap[k]}" for k in sorted(smap.keys(), key=size_order_key)]
+        pairs = [f"{k}-{smap[k]}" for k in sorted(smap.keys(), key=size_key)]
         parts.append(f"{color}: " + " ".join(pairs))
     preview = ", ".join(parts)
     return result, errors, preview
-
 
 # ===================== Conversation state keys ==============================
 STATE_KEY = "shipment_state"
@@ -127,8 +126,7 @@ STEP_SHIPDATE = "ask_shipdate"
 STEP_ETADATE = "ask_etadate"
 STEP_CONFIRM = "confirm"
 
-
-# ===================== UI helpers ==========================================
+# ===================== Helpers ==============================================
 
 def _kb_confirm():
     m = InlineKeyboardMarkup()
@@ -147,7 +145,6 @@ def _format_confirmation(state: dict) -> str:
         "Проверьте правильность данных:",
         f"Склад: {wh}",
     ]
-
     total_all = 0
 
     for item in state.get(STATE_MODELS, []):
@@ -171,50 +168,86 @@ def _format_confirmation(state: dict) -> str:
     return "\n".join(lines)
 
 
-# ===================== Admin notification ==================================
+def _new_bag_id(user_id: int) -> str:
+    """Generate a unique bag/shipment ID"""
+    return f"BAG-{secrets.token_hex(3)}"
+
 
 def _notify_admins_about_new_record(bot: TeleBot, row_index: int, source_username: str):
+    """Notify admins using the new column indexes."""
     try:
         sheets_manager = GoogleSheetsManager.get_instance()
         ws = sheets_manager.get_main_worksheet()
         record = ws.row_values(row_index)
 
-        product_name = record[3] if len(record) > 3 else "Unknown product"
-        product_color = record[7] if len(record) > 7 else "Unknown color"
-        shipment_date = record[4] if len(record) > 4 else "Unknown date"
-        estimated_arrival = record[5] if len(record) > 5 else "Unknown date"
-        total_amount = record[8] if len(record) > 8 else "Unknown amount"
-        warehouse_name = record[9] if len(record) > 9 else "Unknown warehouse"
+        # Column indexes with your schema
+        # 0:timestamp 1:user_id 2:username 3:bag_id 4:warehouse 5:product_name 6:color
+        # 7:shipment_date 8:estimated_arrival 9:actual_arrival 10:total_amount
+        # 11:XS 12:S 13:M 14:L 15:XL 16:XXL 17:2XL 18:3XL 19:4XL 20:5XL 21:6XL 22:7XL
+        # 23:Статус
+        try:
+            product_name = record[5]
+        except Exception:
+            product_name = "-"
+        try:
+            color = record[6]
+        except Exception:
+            color = "-"
+        try:
+            shipment = record[7]
+        except Exception:
+            shipment = "-"
+        try:
+            eta = record[8]
+        except Exception:
+            eta = "-"
+        try:
+            warehouse = record[4]
+        except Exception:
+            warehouse = "-"
+        try:
+            total_amt = record[10]
+        except Exception:
+            total_amt = "0"
+        try:
+            bag_id = record[3]
+        except Exception:
+            bag_id = "-"
+        status = record[23] if len(record) > 23 else "-"
 
-        size_mapping = {10: 'XS', 11: 'S', 12: 'M', 13: 'L', 14: 'XL', 15: '2XL', 16: '3XL', 17: '4XL', 18: '5XL', 19: '6XL', 20: '7XL'}
-        active_sizes = []
-        for col_idx, size_name in size_mapping.items():
-            if len(record) > col_idx and record[col_idx]:
-                qty = str(record[col_idx]).strip()
-                if qty and qty != '0':
-                    active_sizes.append(f"{size_name}({qty})")
-        sizes_text = ", ".join(active_sizes) if active_sizes else "—"
+        size_map_idx = {
+            11:'XS', 12:'S', 13:'M', 14:'L', 15:'XL', 16:'XXL',
+            17:'2XL', 18:'3XL', 19:'4XL', 20:'5XL', 21:'6XL', 22:'7XL'
+        }
+        sizes_text = []
+        for idx, name in size_map_idx.items():
+            if len(record) > idx and record[idx] and str(record[idx]).strip() not in ("", "0"):
+                sizes_text.append(f"{name}({record[idx]})")
+        sizes_text = ", ".join(sizes_text) if sizes_text else "—"
 
         text = (
             f"🆕 Новая запись добавлена в таблицу\n\n"
             f"Пользователь: @{source_username}\n"
+            f"Bag: {bag_id}\n"
+            f"Склад: {warehouse}\n"
             f"Изделие: {product_name}\n"
-            f"Цвет: {product_color}\n"
-            f"Дата отправки: {shipment_date}\n"
-            f"Примерная дата прибытия: {estimated_arrival}\n"
-            f"Склад: {warehouse_name}\n"
-            f"Общее количество: {total_amount}\n"
+            f"Цвет: {color}\n"
+            f"Дата отправки: {shipment}\n"
+            f"Примерная дата прибытия: {eta}\n"
+            f"Общее количество: {total_amt}\n"
             f"Размеры: {sizes_text}\n"
+            f"Статус: {status}\n"
             f"Дата добавления: {datetime.now(pytz.timezone('Asia/Bishkek')).strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
-        # Resolve admin chat ids from Users sheet by username
+        # Resolve admin chat ids
         try:
             users_ws = sheets_manager.get_users_worksheet()
             all_users = users_ws.get_all_values()
         except Exception:
             all_users = []
 
+        from config import ADMIN_USER_USERNAMES
         for admin_username in ADMIN_USER_USERNAMES:
             admin_chat_id = None
             for row in all_users[1:]:
@@ -240,6 +273,16 @@ def setup_save_handler(bot: TeleBot):
     def start_flow(message):
         uid = message.from_user.id
         user_data.initialize_user(uid)
+        # Generate per-session bag_id
+        bag_id = _new_bag_id(uid)
+        user_data.update_user_data(uid, "current_bag_id", bag_id)
+        save_text = ("""Пожалуйста введите данные об отправке пакета. Форма предназначена для одной модели с несколькими расцветками и размерами. Введите данные по порядку. Вы можете добавить модели по очереди.
+
+Нажмите /cancel для отмены
+
+Пожалуйста, введите склад:""")
+        bot.reply_to(message, save_text)
+        
         st = {
             STATE_STEP: STEP_WAREHOUSE,
             STATE_WAREHOUSE: None,
@@ -248,7 +291,6 @@ def setup_save_handler(bot: TeleBot):
             STATE_ETA_DATE: None,
         }
         user_data.update_user_data(uid, STATE_KEY, st)
-        bot.reply_to(message, "Пожалуйста, введите склад:")
 
     @bot.message_handler(func=lambda m: user_data.get_user_data(m.from_user.id) and user_data.get_user_data(m.from_user.id).get(STATE_KEY) is not None)
     def handle_text(message):
@@ -364,18 +406,26 @@ def setup_save_handler(bot: TeleBot):
             try:
                 saved = 0
                 src_username = call.from_user.username or call.from_user.first_name or str(call.from_user.id)
+                bag_id = user_data.get_user_data(uid).get("current_bag_id", "")
+                warehouse_name = st.get(STATE_WAREHOUSE)
+                ship_date = st.get(STATE_SHIP_DATE)
+                eta_date = st.get(STATE_ETA_DATE)
+
                 for item in st.get(STATE_MODELS, []):
                     model_name = item.get("model_name")
                     for color, sizes in item.get("colors", {}).items():
                         total_amount = sum(sizes.values())
                         # Prepare form_data for save_to_sheets
                         user_data.initialize_form_data(uid)
+                        user_data.update_form_data(uid, 'bag_id', bag_id)
+                        user_data.update_form_data(uid, 'warehouse', warehouse_name)
                         user_data.update_form_data(uid, 'product_name', model_name)
-                        user_data.update_form_data(uid, 'product_color', color)
+                        user_data.update_form_data(uid, 'color', color)
+                        user_data.update_form_data(uid, 'shipment_date', ship_date)
+                        user_data.update_form_data(uid, 'estimated_arrival', eta_date)
+                        user_data.update_form_data(uid, 'actual_arrival', '')
                         user_data.update_form_data(uid, 'total_amount', total_amount)
-                        user_data.update_form_data(uid, 'warehouse', st.get(STATE_WAREHOUSE))
-                        user_data.update_form_data(uid, 'shipment_date', st.get(STATE_SHIP_DATE))
-                        user_data.update_form_data(uid, 'estimated_arrival', st.get(STATE_ETA_DATE))
+                        user_data.update_form_data(uid, 'status', 'в обработке')
                         for sz, qty in sizes.items():
                             user_data.update_form_data(uid, sz, qty)
                         row_index = save_to_sheets(bot, call.message)
