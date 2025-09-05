@@ -312,7 +312,7 @@ def setup_save_handler(bot: TeleBot):
             st[STATE_WAREHOUSE] = text
             st[STATE_STEP] = STEP_MODEL
             user_data.update_user_data(uid, STATE_KEY, st)
-            bot.reply_to(message, "Пожалуйста, введите название модели в пакете (только одну за раз):")
+            bot.reply_to(message, "Пожалуйста, введите название модели в пакете (только одну модель за раз):")
             return
 
         if step == STEP_MODEL:
@@ -352,7 +352,7 @@ def setup_save_handler(bot: TeleBot):
             st[STATE_SHIP_DATE] = standardize_date(text)
             st[STATE_STEP] = STEP_ETADATE
             user_data.update_user_data(uid, STATE_KEY, st)
-            bot.reply_to(message, "Введите примерную дату отправки, пример (дд.мм.гггг или дд/мм/гггг):")
+            bot.reply_to(message, "Введите примерную дату прибытия, пример (дд.мм.гггг или дд/мм/гггг):")
             return
 
         if step == STEP_ETADATE:
