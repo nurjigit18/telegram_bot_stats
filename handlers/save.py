@@ -1,228 +1,154 @@
-# handlers/save.py — warehouse-centric shipment flow with bag_id and new columns
+# handlers/save.py — warehouse-centric shipment flow with bag_id + BUTTON sizes UI
 # -*- coding: utf-8 -*-
 
 from telebot import TeleBot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from models.user_data import user_data
-from utils.google_sheets import save_to_sheets, GoogleSheetsManager
+from utils.google_sheets import save_to_sheets, GoogleSheetsManager, SIZE_COLS
 from utils.validators import validate_date, standardize_date
 from datetime import datetime
 import pytz
-import re
 import logging
 import secrets
 
 logger = logging.getLogger(__name__)
 
-# ===================== Parsing utilities (colors → sizes) ====================
-SIZE_MAP = {
-    'XS':'XS','S':'S','M':'M','L':'L','XL':'XL','XXL':'XXL',
-    '2XL':'2XL','3XL':'3XL','4XL':'4XL','5XL':'5XL','6XL':'6XL','7XL':'7XL',
-    # Cyrillic equivalents
-    'ХС':'XS','С':'S','М':'M','Л':'L','ХЛ':'XL',
-    'ХХL':'XXL','ХXL':'XXL',  # tolerant XXL variants
-    '2ХЛ':'2XL','3ХЛ':'3XL','4ХЛ':'4XL','5ХЛ':'5XL','6ХЛ':'6XL','7ХЛ':'7XL',
-    # Optional synonym
-    'XXXL':'3XL'
-}
-
-DASH_PATTERN = r"[-–—:]"
-SIZE_PAIR_RE = re.compile(rf"([A-Za-zА-Яа-я0-9]+)\s*{DASH_PATTERN}\s*(\d+)")
-COLOR_BLOCK_RE = re.compile(r"(?P<color>[^,:;\n]+?)\s*:\s*(?P<sizes>.*?)(?=(?:[^,:;\n]+?\s*:)|$)")
-
-
-def _normalize_colors_input(s: str) -> str:
-    if not s:
-        return ''
-    s = s.strip()
-    s = re.sub(r"[ \t]+", " ", s)
-    s = re.sub(r"\s*,\s*", ", ", s)
-    s = re.sub(r"\s*;\s*", "; ", s)
-    s = s.replace('—','-').replace('–','-')
-    # Unstick pairs like "S-10M-20" -> "S-10 M-20"
-    prev = None
-    for _ in range(20):
-        if prev == s:
-            break
-        prev = s
-        s = re.sub(r"([A-Za-zА-Яа-я0-9]+)-(\d+)([A-Za-zА-Яа-я0-9]+)-(\d+)", r"\1-\2 \3-\4", s)
-    return s
-
-
-def _canon_size(raw: str):
-    key = raw.strip().upper()
-    return SIZE_MAP.get(key, key if key in SIZE_MAP.values() else None)
-
-
-def parse_colors_and_sizes(input_text: str):
-    """Parse 'Цвет: size-qty …, Цвет2: …' into { color: {size: qty} }.
-       Returns (data: dict, errors: list[str], normalized_preview: str)"""
-    errors = []
-    if not input_text or not input_text.strip():
-        return None, ["Строка с расцветками пуста."], ''
-
-    text = _normalize_colors_input(input_text)
-    result = {}
-
-    for m in COLOR_BLOCK_RE.finditer(text):
-        color = m.group('color').strip()
-        sizes_str = m.group('sizes').strip()
-        if not color:
-            errors.append("Найден пустой заголовок расцветки (до двоеточия).")
-            continue
-
-        size_map = {}
-        for size_raw, qty_raw in SIZE_PAIR_RE.findall(sizes_str):
-            c = _canon_size(size_raw)
-            if not c:
-                errors.append(f"Неизвестный размер ‘{size_raw}’ у ‘{color}’. Пропущено.")
-                continue
-            try:
-                q = int(qty_raw)
-                if q <= 0:
-                    errors.append(f"Невалидное количество для {c} у ‘{color}’: {qty_raw}. Пропущено.")
-                    continue
-            except ValueError:
-                errors.append(f"Невалидное количество для {c} у ‘{color}’: {qty_raw}. Пропущено.")
-                continue
-            size_map[c] = size_map.get(c, 0) + q
-
-        if not size_map:
-            errors.append(f"Не найдено валидных пар размер-количество для ‘{color}’.")
-        else:
-            result[color] = size_map
-
-    if not result:
-        return None, errors or ["Не удалось распознать ни одной расцветки."], ''
-
-    # Build normalized preview
-    order = {"XS":0,"S":1,"M":2,"L":3,"XL":4,"XXL":5}
-    def size_key(k: str):
-        if k in order: return (0, order[k])
-        if k.endswith("XL") and k[:-2].isdigit():  # 2XL..7XL
-            return (1, int(k[:-2]))
-        return (2, 0)
-
-    parts = []
-    for color, smap in result.items():
-        pairs = [f"{k}-{smap[k]}" for k in sorted(smap.keys(), key=size_key)]
-        parts.append(f"{color}: " + " ".join(pairs))
-    preview = ", ".join(parts)
-    return result, errors, preview
-
 # ===================== Conversation state keys ==============================
 STATE_KEY = "shipment_state"
 STATE_STEP = "step"
-STATE_WAREHOUSE = "warehouse"
-STATE_MODELS = "models"            # list[{model_name, colors{color:{size:qty}}}]
-STATE_SHIP_DATE = "ship_date"
-STATE_ETA_DATE = "eta_date"
-CURRENT_MODEL = "current_model"
+
+STATE_WAREHOUSE  = "warehouse"
+STATE_MODELS     = "models"            # list[{model_name, colors{color:{size:qty}}}]
+STATE_SHIP_DATE  = "ship_date"
+STATE_ETA_DATE   = "eta_date"
+CURRENT_MODEL    = "current_model"
+
+# color building substate
+CURRENT_COLOR        = "current_color"
+CURRENT_COLOR_SIZES  = "current_color_sizes"  # dict size->qty
+AWAITING_SIZE        = "awaiting_size"        # when expecting numeric amount for selected size
 
 STEP_WAREHOUSE = "ask_warehouse"
-STEP_MODEL = "ask_model"
-STEP_COLORS = "ask_colors"
-STEP_SHIPDATE = "ask_shipdate"
-STEP_ETADATE = "ask_etadate"
-STEP_CONFIRM = "confirm"
+STEP_MODEL     = "ask_model"
+STEP_COLORNAME = "ask_color_name"
+STEP_COLORSZ   = "ask_color_sizes"     # size keypad mode
+STEP_SHIPDATE  = "ask_shipdate"
+STEP_ETADATE   = "ask_etadate"
+STEP_CONFIRM   = "confirm"
+
+WAREHOUSES = [
+    "Казань", "Краснодар", "Электросталь", "Коледино",
+    "Тула", "Невинномысск", "Рязань", "Новосибирск", "Алматы"
+]
 
 # ===================== Helpers ==============================================
-
-def _kb_confirm():
-    m = InlineKeyboardMarkup()
-    m.add(InlineKeyboardButton("💾 Сохранить данные", callback_data="ship_save_all"))
-    m.add(InlineKeyboardButton("➕ Добавить модель", callback_data="ship_add_model"))
-    m.add(InlineKeyboardButton("❌ Отмена", callback_data="ship_cancel"))
-    return m
-
-
-def _format_confirmation(state: dict) -> str:
-    wh = state.get(STATE_WAREHOUSE, "—")
-    ship = state.get(STATE_SHIP_DATE, "—")
-    eta = state.get(STATE_ETA_DATE, "—")
-
-    lines = [
-        "Проверьте правильность данных:",
-        f"Склад: {wh}",
-    ]
-    total_all = 0
-
-    for item in state.get(STATE_MODELS, []):
-        model = item.get("model_name", "—")
-        colors = item.get("colors", {})
-        color_parts = []
-        for color, sizes in colors.items():
-            qty = sum(sizes.values())
-            total_all += qty
-            spairs = " ".join([f"{k}-{v}" for k, v in sizes.items()])
-            color_parts.append(f"{color}: {spairs}")
-        color_preview = ", ".join(color_parts) if color_parts else "—"
-        lines.append(f"Модель: {model}")
-        lines.append(f"Расцветки и размеры: {color_preview}")
-        lines.append("")
-
-    lines.append(f"📊 Общее количество: {total_all} шт")
-    lines.append(f"Дата отправки: {ship}")
-    lines.append(f"Дата прибытия (примерное): {eta}")
-
-    return "\n".join(lines)
-
-
 def _new_bag_id(user_id: int) -> str:
     """Generate a unique bag/shipment ID"""
     return f"BAG-{secrets.token_hex(3)}"
 
+def _kb_warehouses() -> InlineKeyboardMarkup:
+    """Inline keyboard to choose a warehouse."""
+    m = InlineKeyboardMarkup(row_width=3)
+    buttons = [InlineKeyboardButton(w, callback_data=f"wh_{w}") for w in WAREHOUSES]
+    # add() respects row_width
+    m.add(*buttons)
+    return m
+
+def _kb_sizepad(current_color: str, sizes: dict) -> InlineKeyboardMarkup:
+    """
+    Inline keyboard with size buttons + control rows:
+    - size buttons (✓ mark when filled)
+    - ➕ Добавить расцветку
+    - ✅ Закончить модель
+    - 🗑 Очистить расцветку / ↩ Назад к моделям
+    """
+    m = InlineKeyboardMarkup()
+    row = []
+    for i, s in enumerate(SIZE_COLS, 1):
+        mark = "✓" if sizes.get(s, 0) > 0 else ""
+        row.append(InlineKeyboardButton(f"{s}{mark}", callback_data=f"cset_{s}"))
+        if i % 4 == 0:
+            m.row(*row)
+            row = []
+    if row:
+        m.row(*row)
+
+    # requested controls
+    m.row(InlineKeyboardButton("➕ Добавить расцветку", callback_data="cadd_color"))
+    m.row(InlineKeyboardButton("✅ Закончить модель", callback_data="cfinish_model"))
+
+    # utility controls
+    m.row(
+        InlineKeyboardButton("🗑 Очистить расцветку", callback_data="cclr"),
+        InlineKeyboardButton("↩ Назад к моделям", callback_data="cback"),
+    )
+    return m
+
+def _kb_finish_models() -> InlineKeyboardMarkup:
+    """Final summary controls: add another model or finish (save)."""
+    m = InlineKeyboardMarkup()
+    m.add(InlineKeyboardButton("➕ Добавить модель", callback_data="ship_add_model"))
+    m.add(InlineKeyboardButton("✅ Закончить пакет", callback_data="ship_finish_all"))
+    m.add(InlineKeyboardButton("❌ Отмена", callback_data="ship_cancel"))
+    return m
+
+def _format_color_preview(color: str, sizes: dict) -> str:
+    pairs = [f"{k}-{sizes[k]}" for k in SIZE_COLS if sizes.get(k, 0) > 0]
+    body = " ".join(pairs) if pairs else "—"
+    return f"Текущая расцветка: {color}\nРазмеры: {body}\n\n"
+
+def _format_confirmation(state: dict) -> str:
+    wh   = state.get(STATE_WAREHOUSE, "—")
+    ship = state.get(STATE_SHIP_DATE, "—")
+    eta  = state.get(STATE_ETA_DATE, "—")
+
+    lines = ["Проверьте правильность данных:", f"Склад: {wh}"]
+    total_all = 0
+    for item in state.get(STATE_MODELS, []):
+        model  = item.get("model_name", "—")
+        colors = item.get("colors", {})
+        lines.append(f"Модель: {model}")
+        color_parts = []
+        for color, sizes in colors.items():
+            qty = sum(int(v or 0) for v in sizes.values())
+            total_all += qty
+            pairs = [f"{k}-{sizes.get(k,0)}" for k in SIZE_COLS if sizes.get(k,0) > 0]
+            color_parts.append(f"{color}: " + (" ".join(pairs) if pairs else "—"))
+        lines.append("Расцветки и размеры: " + (", ".join(color_parts) if color_parts else "—"))
+        lines.append("")
+    lines.append(f"📊 Общее количество: {total_all} шт")
+    lines.append(f"Дата отправки: {ship}")
+    lines.append(f"Дата прибытия (примерное): {eta}")
+    return "\n".join(lines)
 
 def _notify_admins_about_new_record(bot: TeleBot, row_index: int, source_username: str):
-    """Notify admins using the new column indexes."""
+    """Notify admins using your current column schema."""
     try:
         sheets_manager = GoogleSheetsManager.get_instance()
         ws = sheets_manager.get_main_worksheet()
         record = ws.row_values(row_index)
 
-        # Column indexes with your schema
-        # 0:timestamp 1:user_id 2:username 3:bag_id 4:warehouse 5:product_name 6:color
-        # 7:shipment_date 8:estimated_arrival 9:actual_arrival 10:total_amount
-        # 11:XS 12:S 13:M 14:L 15:XL 16:XXL 17:2XL 18:3XL 19:4XL 20:5XL 21:6XL 22:7XL
-        # 23:Статус
-        try:
-            product_name = record[5]
-        except Exception:
-            product_name = "-"
-        try:
-            color = record[6]
-        except Exception:
-            color = "-"
-        try:
-            shipment = record[7]
-        except Exception:
-            shipment = "-"
-        try:
-            eta = record[8]
-        except Exception:
-            eta = "-"
-        try:
-            warehouse = record[4]
-        except Exception:
-            warehouse = "-"
-        try:
-            total_amt = record[10]
-        except Exception:
-            total_amt = "0"
-        try:
-            bag_id = record[3]
-        except Exception:
-            bag_id = "-"
-        status = record[23] if len(record) > 23 else "-"
+        # header-index helper (cached on class)
+        hi = GoogleSheetsManager.header_index()
 
-        size_map_idx = {
-            11:'XS', 12:'S', 13:'M', 14:'L', 15:'XL', 16:'XXL',
-            17:'2XL', 18:'3XL', 19:'4XL', 20:'5XL', 21:'6XL', 22:'7XL'
-        }
+        def get(name, default="-"):
+            idx = hi[name]
+            return record[idx] if len(record) > idx else default
+
+        product_name = get('product_name')
+        color        = get('color')
+        shipment     = get('shipment_date')
+        eta          = get('estimated_arrival')
+        warehouse    = get('warehouse')
+        total_amt    = get('total_amount', "0")
+        bag_id       = get('bag_id')
+        status       = get('Статус')
+
         sizes_text = []
-        for idx, name in size_map_idx.items():
-            if len(record) > idx and record[idx] and str(record[idx]).strip() not in ("", "0"):
-                sizes_text.append(f"{name}({record[idx]})")
+        for k in SIZE_COLS:
+            idx = hi[k]
+            if len(record) > idx and str(record[idx]).strip() not in ("", "0"):
+                sizes_text.append(f"{k}({record[idx]})")
         sizes_text = ", ".join(sizes_text) if sizes_text else "—"
 
         text = (
@@ -230,7 +156,7 @@ def _notify_admins_about_new_record(bot: TeleBot, row_index: int, source_usernam
             f"Пользователь: @{source_username}\n"
             f"Пакет: {bag_id}\n"
             f"Склад: {warehouse}\n"
-            f"Изделие: {product_name}\n"
+            f"Модель: {product_name}\n"
             f"Цвет: {color}\n"
             f"Дата отправки: {shipment}\n"
             f"Примерная дата прибытия: {eta}\n"
@@ -265,84 +191,103 @@ def _notify_admins_about_new_record(bot: TeleBot, row_index: int, source_usernam
     except Exception as e:
         logger.error(f"Admin notify error: {e}")
 
-
-# ===================== Main handler (replaces previous /save) ===============
-
+# ===================== Entry point ==========================================
 def setup_save_handler(bot: TeleBot):
+
     @bot.message_handler(commands=['save'])
     def start_flow(message):
         uid = message.from_user.id
         user_data.initialize_user(uid)
-        # Generate per-session bag_id
+        # per-session bag_id
         bag_id = _new_bag_id(uid)
         user_data.update_user_data(uid, "current_bag_id", bag_id)
+
+        st = {
+            STATE_STEP:     STEP_WAREHOUSE,
+            STATE_WAREHOUSE: None,
+            STATE_MODELS:    [],
+            STATE_SHIP_DATE: None,
+            STATE_ETA_DATE:  None,
+            CURRENT_MODEL:   None,
+            CURRENT_COLOR:   None,
+            CURRENT_COLOR_SIZES: {},
+            AWAITING_SIZE:   None,
+        }
+        user_data.update_user_data(uid, STATE_KEY, st)
         save_text = ("""Пожалуйста введите данные об отправке пакета. Форма предназначена для одной модели с несколькими расцветками и размерами. Введите данные по порядку. Вы можете добавить модели по очереди.
 
 Нажмите /cancel для отмены
 
 Пожалуйста, введите склад:""")
-        bot.reply_to(message, save_text)
-        
-        st = {
-            STATE_STEP: STEP_WAREHOUSE,
-            STATE_WAREHOUSE: None,
-            STATE_MODELS: [],
-            STATE_SHIP_DATE: None,
-            STATE_ETA_DATE: None,
-        }
-        user_data.update_user_data(uid, STATE_KEY, st)
+        bot.reply_to(message, save_text, reply_markup=_kb_warehouses())
 
+    # ===================== Free-text steps: warehouse, model, dates ==========
     @bot.message_handler(func=lambda m: user_data.get_user_data(m.from_user.id) and user_data.get_user_data(m.from_user.id).get(STATE_KEY) is not None)
     def handle_text(message):
         uid = message.from_user.id
-        st = user_data.get_user_data(uid).get(STATE_KEY, {})
+        st  = user_data.get_user_data(uid).get(STATE_KEY, {})
         step = st.get(STATE_STEP)
-        text = (message.text or '').strip()
+        text = (message.text or "").strip()
 
-        # Allow cancel
+        # cancel
         if text.lower() in {"/cancel", "отмена"}:
             user_data.update_user_data(uid, STATE_KEY, None)
             bot.reply_to(message, "✖️ Процесс отменён.")
             return
 
-        if step == STEP_WAREHOUSE:
-            if not text:
-                bot.reply_to(message, "Склад не может быть пустым. Введите склад:")
+        # When awaiting numeric amount for a size during size keypad
+        if step == STEP_COLORSZ and st.get(AWAITING_SIZE):
+            size = st.get(AWAITING_SIZE)
+            # accept integer only
+            try:
+                qty = int(text)
+                if qty < 0:
+                    raise ValueError
+            except Exception:
+                bot.reply_to(message, f"Введите количество числом для размера {size}.")
                 return
-            st[STATE_WAREHOUSE] = text
-            st[STATE_STEP] = STEP_MODEL
+            # update current color sizes
+            current_sizes = st.get(CURRENT_COLOR_SIZES, {}) or {}
+            current_sizes[size] = qty
+            st[CURRENT_COLOR_SIZES] = current_sizes
+            st[AWAITING_SIZE] = None
             user_data.update_user_data(uid, STATE_KEY, st)
-            bot.reply_to(message, "Пожалуйста, введите название модели в пакете (только одну модель за раз):")
+
+            # re-render keypad with updated preview
+            preview = _format_color_preview(st.get(CURRENT_COLOR), current_sizes)
+            bot.send_message(message.chat.id, preview + "Выберите следующий размер или используйте кнопки ниже.",
+                             reply_markup=_kb_sizepad(st.get(CURRENT_COLOR), current_sizes))
             return
+
+        # Normal step progression
+        if step == STEP_WAREHOUSE:
+            bot.reply_to(message, "Выберите склад с помощью кнопок ниже.", reply_markup=_kb_warehouses())
+            return
+
 
         if step == STEP_MODEL:
             if not text:
                 bot.reply_to(message, "Название модели не может быть пустым. Введите модель:")
                 return
             st[CURRENT_MODEL] = text
-            st[STATE_STEP] = STEP_COLORS
+            st[STATE_STEP] = STEP_COLORNAME
             user_data.update_user_data(uid, STATE_KEY, st)
-            bot.reply_to(message, "Пожалуйста введите размеры на каждую расцветку, пример: Шоколад: S-10 XL-10 3XL-20, Красный: M-10 xl-20")
+            bot.reply_to(message, "Введите название расцветки:")
             return
 
-        if step == STEP_COLORS:
-            colors, errs, preview = parse_colors_and_sizes(text)
-            if not colors:
-                err = "\n".join(["❌ Ошибки распознавания:"] + errs + ["\nПовторите ввод расцветок и размеров по примеру."])
-                bot.reply_to(message, err)
+        if step == STEP_COLORNAME:
+            if not text:
+                bot.reply_to(message, "Название расцветки не может быть пустым. Введите расцветку:")
                 return
-            st.setdefault(STATE_MODELS, []).append({
-                "model_name": st.get(CURRENT_MODEL),
-                "colors": colors,
-            })
-            if not st.get(STATE_SHIP_DATE):
-                st[STATE_STEP] = STEP_SHIPDATE
-                user_data.update_user_data(uid, STATE_KEY, st)
-                bot.reply_to(message, "Введите дату отправки, пример (дд.мм.гггг или дд/мм/гггг):")
-                return
-            st[STATE_STEP] = STEP_CONFIRM
+            st[CURRENT_COLOR] = text
+            st[CURRENT_COLOR_SIZES] = {}
+            st[AWAITING_SIZE] = None
+            st[STATE_STEP] = STEP_COLORSZ
             user_data.update_user_data(uid, STATE_KEY, st)
-            bot.send_message(message.chat.id, _format_confirmation(st), reply_markup=_kb_confirm())
+
+            preview = _format_color_preview(st.get(CURRENT_COLOR), st.get(CURRENT_COLOR_SIZES))
+            bot.reply_to(message, preview + "Выберите размер (кнопка) и укажите количество, затем нажмите «➕ Добавить расцветку» или «✅ Закончить модель».",
+                         reply_markup=_kb_sizepad(st.get(CURRENT_COLOR), st.get(CURRENT_COLOR_SIZES)))
             return
 
         if step == STEP_SHIPDATE:
@@ -362,21 +307,154 @@ def setup_save_handler(bot: TeleBot):
             st[STATE_ETA_DATE] = standardize_date(text)
             st[STATE_STEP] = STEP_CONFIRM
             user_data.update_user_data(uid, STATE_KEY, st)
-            bot.send_message(message.chat.id, _format_confirmation(st), reply_markup=_kb_confirm())
+            bot.send_message(message.chat.id, _format_confirmation(st), reply_markup=_kb_finish_models())
             return
 
         if step == STEP_CONFIRM:
-            bot.send_message(message.chat.id, "Пожалуйста, используйте кнопки ниже.", reply_markup=_kb_confirm())
+            bot.send_message(message.chat.id, "Пожалуйста, используйте кнопки ниже.", reply_markup=_kb_finish_models())
             return
 
-    @bot.callback_query_handler(func=lambda c: c.data in {"ship_save_all","ship_add_model","ship_cancel"})
-    def on_cb(call):
+    # ===================== Callbacks: size keypad & flow control =============
+    @bot.callback_query_handler(func=lambda c: c.data.startswith("cset_") or c.data in {"cadd_color", "cfinish_model", "cclr", "cback"})
+    def on_sizepad(call):
+        uid = call.from_user.id
+        st = user_data.get_user_data(uid).get(STATE_KEY)
+        if not st or st.get(STATE_STEP) != STEP_COLORSZ:
+            bot.answer_callback_query(call.id)
+            return
+
+        bot.answer_callback_query(call.id)
+        data = call.data
+
+        # choose size → ask amount
+        if data.startswith("cset_"):
+            size = data.split("_", 1)[1]
+            st[AWAITING_SIZE] = size
+            user_data.update_user_data(uid, STATE_KEY, st)
+            try:
+                bot.edit_message_text(
+                    _format_color_preview(st.get(CURRENT_COLOR), st.get(CURRENT_COLOR_SIZES)) +
+                    f"Введите количество для размера {size}:",
+                    call.message.chat.id,
+                    call.message.message_id,
+                    reply_markup=None
+                )
+            except Exception:
+                bot.send_message(call.message.chat.id, f"Введите количество для размера {size}:")
+            return
+
+        # clear current color sizes
+        if data == "cclr":
+            st[CURRENT_COLOR_SIZES] = {}
+            st[AWAITING_SIZE] = None
+            user_data.update_user_data(uid, STATE_KEY, st)
+            try:
+                bot.edit_message_text(
+                    _format_color_preview(st.get(CURRENT_COLOR), st.get(CURRENT_COLOR_SIZES)) +
+                    "Выберите размер и укажите количество.",
+                    call.message.chat.id,
+                    call.message.message_id,
+                    reply_markup=_kb_sizepad(st.get(CURRENT_COLOR), st.get(CURRENT_COLOR_SIZES))
+                )
+            except Exception:
+                bot.send_message(call.message.chat.id,
+                                 _format_color_preview(st.get(CURRENT_COLOR), st.get(CURRENT_COLOR_SIZES)) +
+                                 "Выберите размер и укажите количество.",
+                                 reply_markup=_kb_sizepad(st.get(CURRENT_COLOR), st.get(CURRENT_COLOR_SIZES)))
+            return
+
+        # back to models (discard current color if empty)
+        if data == "cback":
+            st[CURRENT_COLOR] = None
+            st[CURRENT_COLOR_SIZES] = {}
+            st[AWAITING_SIZE] = None
+            st[STATE_STEP] = STEP_MODEL
+            user_data.update_user_data(uid, STATE_KEY, st)
+            try:
+                bot.edit_message_text("Пожалуйста, введите название модели в пакете (только одну модель за раз):",
+                                      call.message.chat.id, call.message.message_id)
+            except Exception:
+                bot.send_message(call.message.chat.id, "Пожалуйста, введите название модели в пакете (только одну модель за раз):")
+            return
+
+        # save current color and ask for next color name
+        if data == "cadd_color":
+            color = st.get(CURRENT_COLOR)
+            sizes = st.get(CURRENT_COLOR_SIZES) or {}
+            if not color or sum(int(v or 0) for v in sizes.values()) <= 0:
+                bot.answer_callback_query(call.id, "Добавьте хотя бы один размер для текущей расцветки.")
+                return
+            models = st.get(STATE_MODELS) or []
+            if not models or models[-1].get("model_name") != st.get(CURRENT_MODEL):
+                models.append({"model_name": st.get(CURRENT_MODEL), "colors": {}})
+            models[-1]["colors"][color] = sizes
+            st[STATE_MODELS] = models
+
+            # reset color and ask next color name
+            st[CURRENT_COLOR] = None
+            st[CURRENT_COLOR_SIZES] = {}
+            st[AWAITING_SIZE] = None
+            st[STATE_STEP] = STEP_COLORNAME
+            user_data.update_user_data(uid, STATE_KEY, st)
+            try:
+                bot.edit_message_text("Введите следующую расцветку:", call.message.chat.id, call.message.message_id)
+            except Exception:
+                bot.send_message(call.message.chat.id, "Введите следующую расцветку:")
+            return
+
+        # finish model: store current color (if any), then proceed to dates or summary
+        if data == "cfinish_model":
+            # store current color if filled
+            color = st.get(CURRENT_COLOR)
+            sizes = st.get(CURRENT_COLOR_SIZES) or {}
+            if color and sum(int(v or 0) for v in sizes.values()) > 0:
+                models = st.get(STATE_MODELS) or []
+                if not models or models[-1].get("model_name") != st.get(CURRENT_MODEL):
+                    models.append({"model_name": st.get(CURRENT_MODEL), "colors": {}})
+                models[-1]["colors"][color] = sizes
+                st[STATE_MODELS] = models
+            # clear current color state
+            st[CURRENT_COLOR] = None
+            st[CURRENT_COLOR_SIZES] = {}
+            st[AWAITING_SIZE] = None
+
+            # if no dates yet → ask them; else show summary with (Добавить модель / Закончить)
+            if not st.get(STATE_SHIP_DATE):
+                st[STATE_STEP] = STEP_SHIPDATE
+                user_data.update_user_data(uid, STATE_KEY, st)
+                try:
+                    bot.edit_message_text("Введите дату отправки, пример (дд.мм.гггг или дд/мм/гггг):",
+                                          call.message.chat.id, call.message.message_id)
+                except Exception:
+                    bot.send_message(call.message.chat.id, "Введите дату отправки, пример (дд.мм.гггг или дд/мм/гггг):")
+            elif not st.get(STATE_ETA_DATE):
+                st[STATE_STEP] = STEP_ETADATE
+                user_data.update_user_data(uid, STATE_KEY, st)
+                try:
+                    bot.edit_message_text("Введите примерную дату прибытия, пример (дд.мм.гггг или дд/мм/гггг):",
+                                          call.message.chat.id, call.message.message_id)
+                except Exception:
+                    bot.send_message(call.message.chat.id, "Введите примерную дату прибытия, пример (дд.мм.гггг или дд/мм/гггг):")
+            else:
+                st[STATE_STEP] = STEP_CONFIRM
+                user_data.update_user_data(uid, STATE_KEY, st)
+                try:
+                    bot.edit_message_text(_format_confirmation(st), call.message.chat.id, call.message.message_id,
+                                          reply_markup=_kb_finish_models())
+                except Exception:
+                    bot.send_message(call.message.chat.id, _format_confirmation(st), reply_markup=_kb_finish_models())
+            return
+
+    # ===================== Save / add model / cancel / finish-all callbacks ==
+    @bot.callback_query_handler(func=lambda c: c.data in {"ship_add_model", "ship_cancel", "ship_finish_all"})
+    def on_actions(call):
         uid = call.from_user.id
         st = user_data.get_user_data(uid).get(STATE_KEY)
         if not st:
             bot.answer_callback_query(call.id)
             try:
-                bot.edit_message_text("Сессия не найдена. Начните заново командой /save", call.message.chat.id, call.message.message_id)
+                bot.edit_message_text("Сессия не найдена. Начните заново командой /save",
+                                      call.message.chat.id, call.message.message_id)
             except Exception:
                 bot.send_message(call.message.chat.id, "Сессия не найдена. Начните заново командой /save")
             return
@@ -393,16 +471,19 @@ def setup_save_handler(bot: TeleBot):
             return
 
         if data == "ship_add_model":
-            st.pop(CURRENT_MODEL, None)
+            # ask next model, then color name again
+            st[CURRENT_MODEL] = None
             st[STATE_STEP] = STEP_MODEL
             user_data.update_user_data(uid, STATE_KEY, st)
             try:
-                bot.edit_message_text("Пожалуйста, введите название модели в пакете (только одну за раз):", call.message.chat.id, call.message.message_id)
+                bot.edit_message_text("Пожалуйста, введите название модели в пакете (только одну модель за раз), пример: \n **Шоколад: S-10 XL-10 3XL-20, Красный: M-10 xl-20**",
+                                      call.message.chat.id, call.message.message_id, parse_mode=telegram.constants.ParseMode.MARKDOWN_V2)
             except Exception:
-                bot.send_message(call.message.chat.id, "Пожалуйста, введите название модели в пакете (только одну за раз):")
+                bot.send_message(call.message.chat.id, "Пожалуйста, введите название модели в пакете (только одну модель за раз):")
             return
 
-        if data == "ship_save_all":
+        if data == "ship_finish_all":
+            # save every (model × color) row
             try:
                 saved = 0
                 src_username = call.from_user.username or call.from_user.first_name or str(call.from_user.id)
@@ -413,9 +494,8 @@ def setup_save_handler(bot: TeleBot):
 
                 for item in st.get(STATE_MODELS, []):
                     model_name = item.get("model_name")
-                    for color, sizes in item.get("colors", {}).items():
-                        total_amount = sum(sizes.values())
-                        # Prepare form_data for save_to_sheets
+                    for color, sizes in (item.get("colors") or {}).items():
+                        total_amount = sum(int(v or 0) for v in sizes.values())
                         user_data.initialize_form_data(uid)
                         user_data.update_form_data(uid, 'bag_id', bag_id)
                         user_data.update_form_data(uid, 'warehouse', warehouse_name)
@@ -427,25 +507,28 @@ def setup_save_handler(bot: TeleBot):
                         user_data.update_form_data(uid, 'total_amount', total_amount)
                         user_data.update_form_data(uid, 'status', 'в обработке')
                         for sz, qty in sizes.items():
-                            user_data.update_form_data(uid, sz, qty)
+                            user_data.update_form_data(uid, sz, int(qty))
                         row_index = save_to_sheets(bot, call.message)
                         _notify_admins_about_new_record(bot, row_index, src_username)
                         saved += 1
 
                 try:
-                    bot.edit_message_text(f"✅ Данные сохранены. Создано записей: {saved}", call.message.chat.id, call.message.message_id)
+                    bot.edit_message_text(f"✅ Данные сохранены. Создано записей: {saved}",
+                                          call.message.chat.id, call.message.message_id)
                 except Exception:
                     bot.send_message(call.message.chat.id, f"✅ Данные сохранены. Создано записей: {saved}")
             except Exception as e:
                 logger.error(f"Error saving shipment: {e}")
                 try:
-                    bot.edit_message_text(f"❌ Ошибка при сохранении данных: {e}", call.message.chat.id, call.message.message_id)
+                    bot.edit_message_text(f"❌ Ошибка при сохранении данных: {e}",
+                                          call.message.chat.id, call.message.message_id)
                 except Exception:
                     bot.send_message(call.message.chat.id, f"❌ Ошибка при сохранении данных: {e}")
             finally:
                 user_data.update_user_data(uid, STATE_KEY, None)
             return
 
+    # optional explicit cancel command
     @bot.message_handler(commands=['cancel'])
     def cancel_save_process(message):
         uid = message.from_user.id
@@ -454,3 +537,30 @@ def setup_save_handler(bot: TeleBot):
             bot.reply_to(message, "✖️ Процесс отменён.")
         else:
             bot.reply_to(message, "Нет активного процесса для отмены.")
+            
+    @bot.callback_query_handler(func=lambda c: c.data.startswith("wh_"))
+    def on_choose_warehouse(call):
+        uid = call.from_user.id
+        st = user_data.get_user_data(uid).get(STATE_KEY) if user_data.get_user_data(uid) else None
+        if not st or st.get(STATE_STEP) != STEP_WAREHOUSE:
+            # ignore stale or out-of-flow clicks
+            bot.answer_callback_query(call.id)
+            return
+
+        warehouse = call.data[3:]  # after "wh_"
+        st[STATE_WAREHOUSE] = warehouse
+        st[STATE_STEP] = STEP_MODEL
+        user_data.update_user_data(uid, STATE_KEY, st)
+
+        bot.answer_callback_query(call.id)
+        try:
+            bot.edit_message_text(
+                f"✅ Склад выбран: {warehouse}\n\nПожалуйста, введите название модели в пакете (только одну модель за раз):",
+                call.message.chat.id,
+                call.message.message_id
+            )
+        except Exception:
+            bot.send_message(
+                call.message.chat.id,
+                f"✅ Склад выбран: {warehouse}\n\nПожалуйста, введите название модели в пакете (только одну модель за раз):"
+            )
