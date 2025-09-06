@@ -17,9 +17,9 @@ logger = logging.getLogger(__name__)
 SIZE_COLS = ["XS", "S", "M", "L", "XL", "XXL", "2XL", "3XL", "4XL", "5XL", "6XL", "7XL"]
 
 EXPECTED_HEADERS = [
-    "timestamp", "user_id", "username", "bag_id", "warehouse",
-    "product_name", "color", "shipment_date", "estimated_arrival",
-    "actual_arrival", "total_amount",
+    "время", "user_id", "username", "номер пакета", "склад",
+    "модель", "цвет", "дата отправки", "примерная дата прибытия",
+    "факт. дата прибытия", "Общее количество",
 ] + SIZE_COLS + ["Статус"]
 
 class GoogleSheetsManager:
@@ -86,7 +86,7 @@ class GoogleSheetsManager:
             self._spreadsheet = gc.open_by_key(sheet_id)
 
             # Main worksheet: first tab by default
-            self.main_worksheet = self._spreadsheet.worksheet('nely')
+            self.main_worksheet = self._spreadsheet.worksheet('нарселя')
 
             # Ensure headers are present in the main worksheet
             headers = []

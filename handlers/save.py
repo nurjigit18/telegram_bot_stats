@@ -42,9 +42,47 @@ WAREHOUSES = [
 ]
 
 # ===================== Helpers ==============================================
-def _new_bag_id(user_id: int) -> str:
-    """Generate a unique bag/shipment ID"""
-    return f"BAG-{secrets.token_hex(3)}"
+# --- sequential bag id generator (ID-000, ID-001, ...)
+_bag_seq_counter = None  # lazy-initialized from Sheets
+
+def _new_bag_id(_: int | None = None) -> str:
+    """
+    Generate sequential bag/shipment ID like ID-000, ID-001, ...
+    Initializes from the max existing value in the 'bag_id' column (if present),
+    then increments in memory for subsequent calls.
+    The optional arg is ignored so existing calls _new_bag_id(uid) keep working.
+    """
+    global _bag_seq_counter
+    if _bag_seq_counter is None:
+        # Initialize from Google Sheets once
+        try:
+            sheets_manager = GoogleSheetsManager.get_instance()
+            ws = sheets_manager.get_main_worksheet()
+
+            # Find 'bag_id' header column (1-based index for gspread)
+            headers = ws.row_values(1)
+            bag_col_idx = headers.index('bag_id') + 1 if 'bag_id' in headers else None
+
+            max_num = -1
+            if bag_col_idx:
+                for val in ws.col_values(bag_col_idx):
+                    if isinstance(val, str) and val.startswith("ID-"):
+                        try:
+                            n = int(val.split("-", 1)[1])
+                            if n > max_num:
+                                max_num = n
+                        except Exception:
+                            pass
+            _bag_seq_counter = max_num + 1
+        except Exception:
+            # If headers/Sheet not ready, start from 0; you can re-init later if needed
+            _bag_seq_counter = 0
+
+    bag_id = f"{_bag_seq_counter:03d}"
+    _bag_seq_counter += 1
+    return bag_id
+
+
 
 def _kb_warehouses() -> InlineKeyboardMarkup:
     """Inline keyboard to choose a warehouse."""
