@@ -1,4 +1,8 @@
-# models/user_data.py
+from dataclasses import dataclass, field
+from typing import Dict, List, Any
+
+SESSIONS: Dict[int, "SessionState"] = {}
+
 class UserData:
     def __init__(self):
         self.data = {}
@@ -11,12 +15,13 @@ class UserData:
         }
 
     # keep SIZE_COLS here if you don't want an extra constants module
-    SIZE_COLS = ["XS", "S", "M", "L", "XL", "XXL", "2XL", "3XL", "4XL", "5XL", "6XL", "7XL"]
+    SIZE_COLS = ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL", "7XL", "8XL"]
 
     def initialize_form_data(self, user_id):
         if user_id in self.data:
             payload = {
-                "bag_id": None,
+                "shipment_id": None,  # NEW: shipment ID
+                "bag_id": None,       # NEW: bag ID
                 "warehouse": None,
                 "product_name": None,
                 "color": None,
@@ -94,6 +99,41 @@ class UserData:
         if user_id in self.data:
             return self.data[user_id].get("row_index")
         return None
+
+@dataclass
+class Bag:
+    bag_id: str = ""
+    sizes: Dict[str, int] = field(default_factory=dict)  # e.g. {"XS": 5, "S": 8, ...}
+
+@dataclass
+class SessionState:
+    step: str = "start"
+
+    # existing fields you already use (examples, keep your actual ones)
+    warehouse: str | None = None
+    model: str | None = None
+    color: str | None = None
+
+    # NEW: shipment/bag context
+    shipment_id: str | None = None
+    bags: List[Bag] = field(default_factory=list)         # committed bags of this shipment
+    current_bag: Bag = field(default_factory=Bag)         # in-progress bag (sizes typed so far)
+
+    # (optional) any other fields you had
+    extra: Dict[str, Any] = field(default_factory=dict)
+
+
+def get_session(user_id: int) -> SessionState:
+    if user_id not in SESSIONS:
+        SESSIONS[user_id] = SessionState()
+    return SESSIONS[user_id]
+
+
+def reset_shipment_state(s: SessionState) -> None:
+    s.shipment_id = None
+    s.bags = []
+    s.current_bag = Bag()
+
 
 # Create a singleton instance
 user_data = UserData()

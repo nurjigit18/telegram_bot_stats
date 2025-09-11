@@ -4,6 +4,8 @@ import os
 import json
 import pytz
 import gspread
+import re
+from typing import Dict, List, Any
 from telebot import TeleBot
 from oauth2client.service_account import ServiceAccountCredentials
 from config import GOOGLE_CREDS_FILE, SHEET_ID
@@ -11,13 +13,15 @@ from datetime import datetime
 from models.user_data import user_data
 from google.oauth2.service_account import Credentials
 
+RE_INT = re.compile(r"^\s*(\d+)\s*$")
 
 logger = logging.getLogger(__name__)
 
-SIZE_COLS = ["XS", "S", "M", "L", "XL", "XXL", "2XL", "3XL", "4XL", "5XL", "6XL", "7XL"]
+SIZE_COLS = ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL", "7XL", "8XL"]
 
+# Updated headers with shipment_id and bag_id
 EXPECTED_HEADERS = [
-    "время", "user_id", "username", "номер пакета", "склад",
+    "время", "user_id", "username", "номер отправки", "номер пакета", "склад",
     "модель", "цвет", "дата отправки", "примерная дата прибытия",
     "факт. дата прибытия", "Общее количество",
 ] + SIZE_COLS + ["Статус"]
@@ -25,6 +29,7 @@ EXPECTED_HEADERS = [
 class GoogleSheetsManager:
     _instance = None
     _spreadsheet = None
+    _header_index_cache = None  # Cache for header indices
 
     @classmethod
     def get_instance(cls):
@@ -36,6 +41,7 @@ class GoogleSheetsManager:
         self._spreadsheet = None
         self.main_worksheet = None
         self.users_worksheet = None
+        self._header_index_cache = None
         self.connect()
         
     def get_main_worksheet(self):
@@ -43,6 +49,19 @@ class GoogleSheetsManager:
 
     def get_users_worksheet(self):
         return self.users_worksheet
+
+    @classmethod
+    def header_index(cls):
+        """Return cached header index mapping for efficient lookups"""
+        instance = cls.get_instance()
+        if instance._header_index_cache is None:
+            try:
+                headers = instance.main_worksheet.row_values(1)
+                instance._header_index_cache = {header: idx for idx, header in enumerate(headers)}
+            except Exception:
+                # Fallback to expected headers
+                instance._header_index_cache = {header: idx for idx, header in enumerate(EXPECTED_HEADERS)}
+        return instance._header_index_cache
 
     def connect(self):
         """Connect to Google Sheets and set up worksheets."""
@@ -97,6 +116,8 @@ class GoogleSheetsManager:
             if headers != EXPECTED_HEADERS:
                 self.main_worksheet.clear()
                 self.main_worksheet.update('A1', [EXPECTED_HEADERS])
+                # Clear cache since headers changed
+                self._header_index_cache = None
 
             # Users worksheet
             try:
@@ -109,17 +130,6 @@ class GoogleSheetsManager:
         except Exception as e:
             logger.error(f"Failed to connect to Google Sheets: {e}")
             raise
-
-
-    def get_main_worksheet(self):
-        if self.main_worksheet is None:
-            self.connect()
-        return self.main_worksheet
-
-    def get_users_worksheet(self):
-        if self.users_worksheet is None:
-            self.connect()
-        return self.users_worksheet
 
 def connect_to_google_sheets():
     # Define the scope
@@ -209,6 +219,8 @@ def save_to_sheets(bot, message):
         if headers != EXPECTED_HEADERS:
             worksheet.clear()
             worksheet.update('A1', [EXPECTED_HEADERS])
+            # Clear cache since headers changed
+            sheets_manager._header_index_cache = None
 
         # Timestamp in Asia/Bishkek
         timestamp = datetime.now(pytz.timezone('Asia/Bishkek')).strftime("%Y-%m-%d %H:%M:%S")
@@ -218,7 +230,8 @@ def save_to_sheets(bot, message):
             timestamp,
             user_id,
             username,
-            form_data.get('bag_id', ''),
+            form_data.get('shipment_id', ''),  # NEW: shipment ID
+            form_data.get('bag_id', ''),       # NEW: bag ID
             form_data.get('warehouse', ''),
             form_data.get('product_name', ''),
             form_data.get('color', ''),
