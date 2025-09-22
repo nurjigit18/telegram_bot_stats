@@ -13,6 +13,7 @@ from telebot import TeleBot
 from config import BOT_TOKEN
 from utils.google_sheets import GoogleSheetsManager
 from utils.google_sheets import connect_to_google_sheets
+from handlers.debug_factories import setup_debug_factory_handlers
 from handlers.start import setup_start_handler
 from handlers.save import setup_save_handler
 from handlers.edit import setup_edit_handler
@@ -255,6 +256,8 @@ def bot_polling(bot):
 
     return True
 
+def _save(m): cmd_save(bot, m)
+
 def main():
     """Main function with single-instance locking"""
     # Set up signal handlers for graceful shutdown
@@ -306,7 +309,8 @@ def main():
             setup_file_sender_handlers,
             setup_default_handler,
             setup_announcement_handlers,
-            setup_deletion_handlers
+            setup_deletion_handlers,
+            setup_debug_factory_handlers
         ]
 
         for handler in handlers:

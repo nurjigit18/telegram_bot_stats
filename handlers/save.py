@@ -1,10 +1,12 @@
-# handlers/save.py — warehouse-centric shipment flow with multiple bags per model+color
+# handlers/save.py — Complete warehouse-centric shipment flow with factory support
 # -*- coding: utf-8 -*-
 
 from telebot import TeleBot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from models.user_data import user_data
-from utils.google_sheets import save_to_sheets, GoogleSheetsManager, SIZE_COLS
+from models.factory_data import factory_manager
+from handlers.factory_selection import prompt_factory_selection, handle_factory_selection
+from utils.google_sheets import GoogleSheetsManager, SIZE_COLS
 from utils.validators import validate_date, standardize_date
 from datetime import datetime
 import pytz
@@ -52,16 +54,11 @@ STEP_SHIPDATE  = "ask_shipdate"
 STEP_ETADATE   = "ask_etadate"
 STEP_CONFIRM   = "confirm"
 
-WAREHOUSES = [
-    "Казань", "Краснодар", "Электросталь", "Коледино",
-    "Тула", "Невинномысск", "Рязань", "Новосибирск", "Алматы", "Котовск"
-]
-
 # ===================== Enhanced ID Generation with Error Handling ========
 
-def _safe_get_sheet_data() -> Tuple[list, dict]:
+def _safe_get_factory_sheet_data(tab_name: str) -> Tuple[list, dict]:
     """
-    Safely retrieve sheet data with comprehensive error handling.
+    Safely retrieve factory sheet data with comprehensive error handling.
     Returns: (all_values, header_mapping)
     """
     max_retries = 3
@@ -69,14 +66,13 @@ def _safe_get_sheet_data() -> Tuple[list, dict]:
     
     for attempt in range(max_retries):
         try:
-            sheets_manager = GoogleSheetsManager.get_instance()
-            ws = sheets_manager.get_main_worksheet()
+            ws = factory_manager.get_factory_worksheet(tab_name)
             
             # Get all data with timeout protection
             all_values = ws.get_all_values()
             
             if not all_values:
-                logger.warning(f"Sheet appears empty on attempt {attempt + 1}")
+                logger.warning(f"Factory sheet {tab_name} appears empty on attempt {attempt + 1}")
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay)
                     continue
@@ -89,28 +85,28 @@ def _safe_get_sheet_data() -> Tuple[list, dict]:
                 clean_header = header.lower().strip()
                 header_map[clean_header] = i
             
-            logger.info(f"Successfully retrieved {len(all_values)} rows from sheet")
+            logger.info(f"Successfully retrieved {len(all_values)} rows from factory sheet {tab_name}")
             return all_values, header_map
             
         except Exception as e:
-            logger.error(f"Attempt {attempt + 1} failed to get sheet data: {e}")
+            logger.error(f"Attempt {attempt + 1} failed to get factory sheet data for {tab_name}: {e}")
             if attempt < max_retries - 1:
                 time.sleep(retry_delay * (attempt + 1))  # Exponential backoff
             else:
-                raise ShipmentIDError(f"Failed to access sheet after {max_retries} attempts: {e}")
+                raise ShipmentIDError(f"Failed to access factory sheet {tab_name} after {max_retries} attempts: {e}")
 
-def _extract_shipment_ids(all_values: list, header_map: dict) -> list:
+def _extract_shipment_ids_from_factory(all_values: list, header_map: dict) -> list:
     """
-    Extract all shipment IDs from sheet data with validation.
+    Extract all shipment IDs from factory sheet data with validation.
     Returns list of integer shipment IDs.
     """
     shipment_ids = []
     shipment_col_idx = header_map.get('номер отправки')
     
     if shipment_col_idx is None:
-        logger.error("Column 'номер отправки' not found in headers")
+        logger.error("Column 'номер отправки' not found in factory sheet headers")
         logger.debug(f"Available headers: {list(header_map.keys())}")
-        raise ShipmentIDError("Shipment ID column not found in sheet headers")
+        raise ShipmentIDError("Shipment ID column not found in factory sheet headers")
     
     # Process data rows (skip header)
     for row_idx, row in enumerate(all_values[1:], start=2):
@@ -134,9 +130,9 @@ def _extract_shipment_ids(all_values: list, header_map: dict) -> list:
     
     return shipment_ids
 
-def _extract_bag_ids_for_shipment(all_values: list, header_map: dict, shipment_id: str) -> list:
+def _extract_bag_ids_for_shipment_factory(all_values: list, header_map: dict, shipment_id: str) -> list:
     """
-    Extract bag numbers for a specific shipment.
+    Extract bag numbers for a specific shipment from factory worksheet.
     Returns list of integer bag numbers.
     """
     bag_numbers = []
@@ -144,10 +140,10 @@ def _extract_bag_ids_for_shipment(all_values: list, header_map: dict, shipment_i
     shipment_col_idx = header_map.get('номер отправки')
     
     if bag_id_col_idx is None:
-        raise BagIDError("Bag ID column 'номер пакета' not found in sheet headers")
+        raise BagIDError("Bag ID column 'номер пакета' not found in factory sheet headers")
     
     if shipment_col_idx is None:
-        raise BagIDError("Shipment ID column 'номер отправки' not found in sheet headers")
+        raise BagIDError("Shipment ID column 'номер отправки' not found in factory sheet headers")
     
     for row_idx, row in enumerate(all_values[1:], start=2):
         if len(row) <= max(bag_id_col_idx, shipment_col_idx):
@@ -182,54 +178,54 @@ def _extract_bag_ids_for_shipment(all_values: list, header_map: dict, shipment_i
     
     return bag_numbers
 
-def _new_shipment_id() -> str:
+def _new_shipment_id_for_factory(tab_name: str) -> str:
     """
-    Generate next sequential shipment ID with comprehensive error handling.
+    Generate next sequential shipment ID for specific factory with comprehensive error handling.
     Uses thread lock to prevent race conditions.
     """
     with _id_generation_lock:
         try:
-            logger.info("Generating new shipment ID...")
+            logger.info(f"Generating new shipment ID for factory {tab_name}...")
             
-            # Get sheet data safely
-            all_values, header_map = _safe_get_sheet_data()
+            # Get factory sheet data safely
+            all_values, header_map = _safe_get_factory_sheet_data(tab_name)
             
             if not all_values or len(all_values) < 2:
-                logger.info("No existing data found, starting with shipment ID 1")
+                logger.info(f"No existing data found for factory {tab_name}, starting with shipment ID 1")
                 return "1"
             
             # Extract and validate shipment IDs
-            shipment_ids = _extract_shipment_ids(all_values, header_map)
+            shipment_ids = _extract_shipment_ids_from_factory(all_values, header_map)
             
             if not shipment_ids:
-                logger.info("No valid shipment IDs found, starting with shipment ID 1")
+                logger.info(f"No valid shipment IDs found for factory {tab_name}, starting with shipment ID 1")
                 return "1"
             
             # Find maximum and generate next ID
             max_shipment_id = max(shipment_ids)
             next_id = max_shipment_id + 1
             
-            logger.info(f"Generated shipment ID: {next_id} (previous max: {max_shipment_id}, total existing: {len(shipment_ids)})")
+            logger.info(f"Generated shipment ID: {next_id} for factory {tab_name} (previous max: {max_shipment_id})")
             return str(next_id)
             
         except ShipmentIDError:
             # Re-raise our custom exceptions
             raise
         except Exception as e:
-            logger.error(f"Unexpected error generating shipment ID: {e}")
+            logger.error(f"Unexpected error generating shipment ID for factory {tab_name}: {e}")
             # Fallback to timestamp-based ID to avoid conflicts
             timestamp_id = str(int(time.time()) % 100000)
-            logger.warning(f"Using fallback timestamp-based ID: {timestamp_id}")
+            logger.warning(f"Using fallback timestamp-based ID for factory {tab_name}: {timestamp_id}")
             return timestamp_id
 
-def _get_next_bag_number_for_shipment(shipment_id: str) -> int:
+def _get_next_bag_number_for_shipment_factory(tab_name: str, shipment_id: str) -> int:
     """
-    Get next bag number for a specific shipment with comprehensive error handling.
+    Get next bag number for a specific shipment in factory with comprehensive error handling.
     Uses thread lock to prevent race conditions.
     """
     with _id_generation_lock:
         try:
-            logger.info(f"Getting next bag number for shipment {shipment_id}...")
+            logger.info(f"Getting next bag number for shipment {shipment_id} in factory {tab_name}...")
             
             # Validate input
             if not shipment_id or not shipment_id.strip():
@@ -237,39 +233,39 @@ def _get_next_bag_number_for_shipment(shipment_id: str) -> int:
             
             shipment_id = shipment_id.strip()
             
-            # Get sheet data safely
-            all_values, header_map = _safe_get_sheet_data()
+            # Get factory sheet data safely
+            all_values, header_map = _safe_get_factory_sheet_data(tab_name)
             
             if not all_values or len(all_values) < 2:
-                logger.info(f"No existing data found, starting with bag number 1 for shipment {shipment_id}")
+                logger.info(f"No existing data found for factory {tab_name}, starting with bag number 1 for shipment {shipment_id}")
                 return 1
             
             # Extract bag numbers for this shipment
-            bag_numbers = _extract_bag_ids_for_shipment(all_values, header_map, shipment_id)
+            bag_numbers = _extract_bag_ids_for_shipment_factory(all_values, header_map, shipment_id)
             
             if not bag_numbers:
-                logger.info(f"No existing bags found for shipment {shipment_id}, starting with bag number 1")
+                logger.info(f"No existing bags found for shipment {shipment_id} in factory {tab_name}, starting with bag number 1")
                 return 1
             
             # Find maximum and generate next bag number
             max_bag_number = max(bag_numbers)
             next_bag_number = max_bag_number + 1
             
-            logger.info(f"Generated bag number {next_bag_number} for shipment {shipment_id} (previous max: {max_bag_number})")
+            logger.info(f"Generated bag number {next_bag_number} for shipment {shipment_id} in factory {tab_name}")
             return next_bag_number
             
         except BagIDError:
             # Re-raise our custom exceptions
             raise
         except Exception as e:
-            logger.error(f"Unexpected error getting bag number for shipment {shipment_id}: {e}")
+            logger.error(f"Unexpected error getting bag number for shipment {shipment_id} in factory {tab_name}: {e}")
             # Fallback to bag number 1
-            logger.warning(f"Using fallback bag number 1 for shipment {shipment_id}")
+            logger.warning(f"Using fallback bag number 1 for shipment {shipment_id} in factory {tab_name}")
             return 1
 
-def _generate_bag_id(shipment_id: str, bag_number: Optional[int] = None) -> str:
+def _generate_bag_id_factory(tab_name: str, shipment_id: str, bag_number: Optional[int] = None) -> str:
     """
-    Generate bag ID with error handling and validation.
+    Generate bag ID for factory with error handling and validation.
     If bag_number is not provided, gets next available number.
     """
     try:
@@ -281,85 +277,56 @@ def _generate_bag_id(shipment_id: str, bag_number: Optional[int] = None) -> str:
         
         # Get bag number if not provided
         if bag_number is None:
-            bag_number = _get_next_bag_number_for_shipment(shipment_id)
+            bag_number = _get_next_bag_number_for_shipment_factory(tab_name, shipment_id)
         
         # Validate bag number
         if not isinstance(bag_number, int) or bag_number < 1:
             raise BagIDError(f"Invalid bag number: {bag_number}. Must be positive integer.")
         
         bag_id = f"{shipment_id}-{bag_number}"
-        logger.debug(f"Generated bag ID: {bag_id}")
+        logger.debug(f"Generated bag ID: {bag_id} for factory {tab_name}")
         return bag_id
         
     except Exception as e:
-        logger.error(f"Error generating bag ID: {e}")
+        logger.error(f"Error generating bag ID for factory {tab_name}: {e}")
         # Fallback to timestamp-based ID
         fallback_id = f"{shipment_id}-{int(time.time()) % 1000}"
-        logger.warning(f"Using fallback bag ID: {fallback_id}")
+        logger.warning(f"Using fallback bag ID for factory {tab_name}: {fallback_id}")
         return fallback_id
-
-def _validate_shipment_integrity(shipment_id: str) -> dict:
-    """
-    Validate shipment data integrity and return diagnostic information.
-    Useful for debugging and monitoring.
-    """
-    try:
-        all_values, header_map = _safe_get_sheet_data()
-        
-        if not all_values:
-            return {
-                "valid": True,
-                "message": "No data to validate",
-                "shipment_exists": False,
-                "bag_count": 0,
-                "bags": []
-            }
-        
-        # Find all records for this shipment
-        shipment_col_idx = header_map.get('номер отправки')
-        bag_col_idx = header_map.get('номер пакета')
-        
-        if shipment_col_idx is None or bag_col_idx is None:
-            return {
-                "valid": False,
-                "message": "Required columns not found",
-                "error": "Missing shipment or bag ID columns"
-            }
-        
-        shipment_records = []
-        for row_idx, row in enumerate(all_values[1:], start=2):
-            if (len(row) > max(shipment_col_idx, bag_col_idx) and 
-                row[shipment_col_idx].strip() == shipment_id):
-                shipment_records.append({
-                    "row": row_idx,
-                    "bag_id": row[bag_col_idx].strip(),
-                    "data": row
-                })
-        
-        return {
-            "valid": True,
-            "shipment_exists": len(shipment_records) > 0,
-            "bag_count": len(shipment_records),
-            "bags": [r["bag_id"] for r in shipment_records],
-            "records": shipment_records
-        }
-        
-    except Exception as e:
-        logger.error(f"Error validating shipment {shipment_id}: {e}")
-        return {
-            "valid": False,
-            "message": f"Validation error: {e}",
-            "error": str(e)
-        }
 
 # ===================== Keyboard Helpers ==================================
 
-def _kb_warehouses() -> InlineKeyboardMarkup:
-    """Inline keyboard to choose a warehouse."""
-    m = InlineKeyboardMarkup(row_width=3)
-    buttons = [InlineKeyboardButton(w, callback_data=f"wh_{w}") for w in WAREHOUSES]
-    m.add(*buttons)
-    return m
+def _kb_warehouses_for_factory(factory_tab_name: str) -> InlineKeyboardMarkup:
+    """Inline keyboard to choose a warehouse for specific factory."""
+    try:
+        # Get factory-specific warehouses
+        warehouses = factory_manager.get_factory_warehouses(factory_tab_name)
+        
+        m = InlineKeyboardMarkup(row_width=3)
+        buttons = [InlineKeyboardButton(w, callback_data=f"wh_{w}") for w in warehouses]
+        
+        # Add buttons in rows of 3
+        for i in range(0, len(buttons), 3):
+            row = buttons[i:i+3]
+            m.row(*row)
+        
+        return m
+        
+    except Exception as e:
+        logger.error(f"Error creating warehouse keyboard for factory {factory_tab_name}: {e}")
+        # Fallback to default warehouses
+        default_warehouses = [
+            "Казань", "Краснодар", "Электросталь", "Коледино",
+            "Тула", "Невинномысск", "Рязань", "Новосибирск", 
+            "Алматы", "Котовск"
+        ]
+        m = InlineKeyboardMarkup(row_width=3)
+        buttons = [InlineKeyboardButton(w, callback_data=f"wh_{w}") for w in default_warehouses]
+        for i in range(0, len(buttons), 3):
+            row = buttons[i:i+3]
+            m.row(*row)
+        return m
+
 
 def _kb_sizepad(current_color: str, current_bag: dict, bag_index: int, total_bags: int) -> InlineKeyboardMarkup:
     """
@@ -403,7 +370,7 @@ def _kb_finish_models() -> InlineKeyboardMarkup:
     m = InlineKeyboardMarkup()
     m.add(InlineKeyboardButton("➕ Добавить модель", callback_data="ship_add_model"))
     m.add(InlineKeyboardButton("✅ Закончить отправку", callback_data="ship_finish_all"))
-    m.add(InlineKeyboardButton("⌫ Отмена", callback_data="ship_cancel"))
+    m.add(InlineKeyboardButton("❌ Отмена", callback_data="ship_cancel"))
     return m
 
 # ===================== Formatting Helpers ================================
@@ -416,13 +383,17 @@ def _format_bag_preview(color: str, current_bag: dict, bag_index: int, total_bag
     bag_id = current_bag.get('bag_id', f'пакет {bag_index + 1}')
     return f"Текущая расцветка: {color}\nПакет: {bag_id} ({bag_index + 1}/{total_bags})\nРазмеры: {body}\n\n"
 
-def _format_confirmation(state: dict) -> str:
+def _format_confirmation(state: dict, factory_name: str) -> str:
     """Format confirmation message showing all data"""
     wh = state.get(STATE_WAREHOUSE, "—")
     ship = state.get(STATE_SHIP_DATE, "—")
     eta = state.get(STATE_ETA_DATE, "—")
     
-    lines = ["Проверьте правильность данных:", f"Склад: {wh}"]
+    lines = [
+        "Проверьте правильность данных:", 
+        f"📋 Фабрика: {factory_name}",
+        f"Склад: {wh}"
+    ]
     total_all = 0
     total_bags = 0
     
@@ -450,14 +421,15 @@ def _format_confirmation(state: dict) -> str:
     lines.append(f"Дата прибытия (примерное): {eta}")
     return "\n".join(lines)
 
-def _notify_admins_about_new_record(bot: TeleBot, row_index: int, source_username: str):
-    """Notify admins using updated column schema with shipment_id and bag_id"""
+def _notify_admins_about_new_record_factory(bot: TeleBot, row_index: int, source_username: str, factory_name: str, tab_name: str):
+    """Notify admins using updated column schema with shipment_id and bag_id for factory"""
     try:
-        sheets_manager = GoogleSheetsManager.get_instance()
-        ws = sheets_manager.get_main_worksheet()
-        record = ws.row_values(row_index)
+        worksheet = factory_manager.get_factory_worksheet(tab_name)
+        record = worksheet.row_values(row_index)
 
-        hi = GoogleSheetsManager.header_index()
+        # Create header mapping for factory worksheet
+        headers = worksheet.row_values(1)
+        hi = {header: idx for idx, header in enumerate(headers)}
 
         def get(name, default="-"):
             idx = hi.get(name)
@@ -465,14 +437,14 @@ def _notify_admins_about_new_record(bot: TeleBot, row_index: int, source_usernam
                 return record[idx]
             return default
 
-        product_name = get('product_name')
-        color = get('color')
-        shipment = get('shipment_date')
-        eta = get('estimated_arrival')
-        warehouse = get('warehouse')
-        total_amt = get('total_amount', "0")
-        shipment_id = get('shipment_id')
-        bag_id = get('bag_id')
+        product_name = get('модель')
+        color = get('цвет')
+        shipment = get('дата отправки')
+        eta = get('примерная дата прибытия')
+        warehouse = get('склад')
+        total_amt = get('Общее количество', "0")
+        shipment_id = get('номер отправки')
+        bag_id = get('номер пакета')
         status = get('Статус')
 
         sizes_text = []
@@ -483,7 +455,7 @@ def _notify_admins_about_new_record(bot: TeleBot, row_index: int, source_usernam
         sizes_text = ", ".join(sizes_text) if sizes_text else "—"
 
         text = (
-            f"🆕 Новая запись добавлена в таблицу\n\n"
+            f"🆕 Новая запись добавлена в фабрику {factory_name}\n\n"
             f"Пользователь: @{source_username}\n"
             f"Отправка: {shipment_id}\n"
             f"Пакет: {bag_id}\n"
@@ -499,6 +471,7 @@ def _notify_admins_about_new_record(bot: TeleBot, row_index: int, source_usernam
         )
 
         try:
+            sheets_manager = GoogleSheetsManager.get_instance()
             users_ws = sheets_manager.get_users_worksheet()
             all_users = users_ws.get_all_values()
         except Exception as e:
@@ -522,58 +495,310 @@ def _notify_admins_about_new_record(bot: TeleBot, row_index: int, source_usernam
                 except Exception as e:
                     logger.warning(f"Failed to notify admin {admin_username}: {e}")
     except Exception as e:
-        logger.error(f"Admin notify error: {e}")
+        logger.error(f"Admin notify error for factory {factory_name}: {e}")
+
+def save_to_sheets_factory(bot, message):
+    """
+    Append one row to the factory worksheet using data from user_data.form_data.
+    Returns the row index (int) of the row that was appended.
+    """
+    try:
+        # Derive user_id and username from the chat
+        user_id = getattr(getattr(message, "chat", None), "id", None)
+        if user_id is None:
+            user_id = getattr(getattr(message, "from_user", None), "id", None)
+
+        if user_id is None:
+            raise ValueError("Unable to determine user_id from message/chat.")
+
+        # Get current factory info
+        current_factory = user_data.get_user_data(user_id).get("current_factory")
+        if not current_factory:
+            raise ValueError("No factory selected for this session.")
+
+        # Get factory-specific worksheet
+        worksheet = factory_manager.get_factory_worksheet(current_factory['tab_name'])
+
+        chat_username = getattr(getattr(message, "chat", None), "username", None)
+        from_username = getattr(getattr(message, "from_user", None), "username", None)
+        first_name = getattr(getattr(message, "from_user", None), "first_name", None)
+        username = chat_username or from_username or first_name or str(user_id)
+
+        form_data = user_data.get_form_data(user_id)
+        if not form_data or not isinstance(form_data, dict):
+            logger.error(f"No form data found for user_id: {user_id}")
+            bot.send_message(message.chat.id, "❌ Данные пользователя не найдены. Повторите ввод.")
+            raise RuntimeError("Form data missing")
+
+        # Ensure headers are present in factory worksheet
+        from utils.google_sheets import EXPECTED_HEADERS
+        try:
+            headers = worksheet.row_values(1)
+        except Exception:
+            headers = []
+        if headers != EXPECTED_HEADERS:
+            worksheet.clear()
+            worksheet.update('A1', [EXPECTED_HEADERS])
+
+        # Timestamp in Asia/Bishkek
+        timestamp = datetime.now(pytz.timezone('Asia/Bishkek')).strftime("%Y-%m-%d %H:%M:%S")
+
+        # Build row to EXACTLY match EXPECTED_HEADERS
+        row = [
+            timestamp,
+            user_id,
+            username,
+            form_data.get('shipment_id', ''),  # NEW: shipment ID
+            form_data.get('bag_id', ''),       # NEW: bag ID
+            form_data.get('warehouse', ''),
+            form_data.get('product_name', ''),
+            form_data.get('color', ''),
+            form_data.get('shipment_date', ''),
+            form_data.get('estimated_arrival', ''),
+            form_data.get('actual_arrival', ''),
+            int(form_data.get('total_amount') or 0),
+        ] + [int(form_data.get(k) or 0) for k in SIZE_COLS] + [
+            form_data.get('status', 'в обработке')
+        ]
+
+        # Append
+        worksheet.append_row(row, value_input_option='USER_ENTERED')
+
+        # Last non-empty row index after append
+        all_values = worksheet.get_all_values()
+        last_row = len(all_values)
+
+        logger.info(f"Saved row #{last_row} for user {username} (ID {user_id}) to factory {current_factory['name']}")
+        try:
+            bot.send_message(message.chat.id, f"✅ Данные сохранены в фабрику {current_factory['name']}!")
+        except Exception:
+            pass
+
+        # Persist the last row index for admin notifications
+        user_data.set_row_index(user_id, last_row)
+        return last_row
+
+    except Exception as e:
+        logger.error(f"Error in save_to_sheets_factory: {e}")
+        raise
 
 # ===================== Entry point ==========================================
 
 def setup_save_handler(bot: TeleBot):
+    """Set up save handler with factory support - FIXED VERSION"""
 
     @bot.message_handler(commands=['save'])
     def start_flow(message):
+        """Start save flow with factory selection - FIXED"""
         uid = message.from_user.id
+        
+        # Set pending action for factory selection
+        user_data.initialize_user(uid)
+        user_data.update_user_data(uid, "pending_action", "save")
+        
+        logger.info(f"User {uid} started save flow")
+        
+        # First, prompt for factory selection
+        should_wait_for_selection = prompt_factory_selection(bot, message, "save")
+        
+        if should_wait_for_selection:
+            # Either factory selection menu was shown, or user has no factories
+            logger.info(f"User {uid}: Waiting for factory selection or has no factories")
+            return
+        
+        # If we reach here, user has only one factory and it was auto-selected
+        logger.info(f"User {uid}: Single factory auto-selected, continuing with save flow")
+        
+        # Get the auto-selected factory from user data
+        factory_info = user_data.get_user_data(uid).get("selected_factory")
+        
+        if not factory_info:
+            logger.error(f"User {uid}: Factory should have been auto-selected but not found in user data")
+            bot.send_message(message.chat.id, "❌ Ошибка при автовыборе фабрики. Попробуйте позже.")
+            return
+        
+        logger.info(f"User {uid}: Starting save flow with factory {factory_info['name']}")
+        start_save_flow_with_factory(bot, message, factory_info)
+        
+    def generate_shipment_id(factory_tab_name):
+        """Generate unique shipment ID for factory - Column D (index 3)"""
         try:
-            user_data.initialize_user(uid)
+            logger.info(f"Generating new shipment ID for factory {factory_tab_name}...")
             
-            # Generate shipment ID with error handling
-            try:
-                shipment_id = _new_shipment_id()
-                user_data.update_user_data(uid, "current_shipment_id", shipment_id)
-                logger.info(f"User {uid} started new shipment {shipment_id}")
-            except ShipmentIDError as e:
-                logger.error(f"Failed to generate shipment ID for user {uid}: {e}")
-                bot.reply_to(message, "❌ Ошибка при создании номера отправки. Попробуйте позже или обратитесь к администратору.")
-                return
-            except Exception as e:
-                logger.error(f"Unexpected error generating shipment ID for user {uid}: {e}")
-                bot.reply_to(message, "❌ Произошла неожиданная ошибка. Попробуйте позже.")
-                return
-
-            st = {
-                STATE_STEP: STEP_WAREHOUSE,
-                STATE_WAREHOUSE: None,
-                STATE_MODELS: [],
-                STATE_SHIP_DATE: None,
-                STATE_ETA_DATE: None,
-                CURRENT_MODEL: None,
-                CURRENT_COLOR: None,
-                CURRENT_BAG_INDEX: 0,
-                CURRENT_BAGS: [],
-                AWAITING_SIZE: None,
-            }
-            user_data.update_user_data(uid, STATE_KEY, st)
+            # Get the factory worksheet
+            worksheet = factory_manager.get_factory_worksheet(factory_tab_name)
+            all_data = worksheet.get_all_values()
             
-            save_text = (
-                f"Пожалуйста введите данные об отправке №{shipment_id}. "
-                f"Форма предназначена для одной модели с несколькими расцветками и размерами. "
-                f"Введите данные по порядку. Вы можете добавить модели по очереди.\n\n"
-                f"Нажмите /cancel для отмены\n\n"
-                f"Пожалуйста, введите склад:"
-            )
-            bot.reply_to(message, save_text, reply_markup=_kb_warehouses())
+            if len(all_data) <= 1:  # Only headers or empty
+                logger.info(f"Factory sheet {factory_tab_name} is empty, starting with ID 1")
+                return 1
+            
+            logger.info(f"Successfully retrieved {len(all_data)} rows from factory sheet {factory_tab_name}")
+            
+            max_id = 0
+            for i, row in enumerate(all_data[1:], start=2):  # Skip header
+                if row and len(row) > 3:  # Make sure column D exists
+                    try:
+                        shipment_id = int(row[3])  # Column D (index 3)
+                        if shipment_id > 0:  # Valid positive ID
+                            max_id = max(max_id, shipment_id)
+                    except (ValueError, IndexError):
+                        logger.warning(f"Invalid shipment ID '{row[3] if len(row) > 3 else 'missing'}' in row {i}, column D")
+                        continue
+            
+            new_id = max_id + 1
+            logger.info(f"Generated shipment ID: {new_id} for factory {factory_tab_name} (previous max: {max_id})")
+            return new_id
             
         except Exception as e:
-            logger.error(f"Error in start_flow for user {uid}: {e}")
-            bot.reply_to(message, "❌ Ошибка при инициализации. Попробуйте позже.")
+            logger.error(f"Error generating shipment ID for factory {factory_tab_name}: {e}")
+            return 1
+
+
+    def start_save_flow_with_factory(bot, message, override_user_id=None):
+        """Start save flow after factory is selected - FIXED VERSION"""
+        try:
+            # CRITICAL FIX: Use override_user_id if provided (from callback context)
+            user_id = override_user_id or message.from_user.id
+            logger.info(f"User {user_id}: Starting save flow with factory")
+            
+            # Get the selected factory from user data
+            user_session = user_data.get_user_data(user_id)
+            if not user_session or "selected_factory" not in user_session:
+                bot.send_message(message.chat.id, "❌ Фабрика не выбрана. Попробуйте снова.")
+                logger.error(f"User {user_id}: No selected factory found")
+                return
+            
+            factory_info = user_session["selected_factory"]
+            logger.info(f"User {user_id}: Using factory info: {factory_info}")
+            
+            # Store factory info in current_factory for the save process
+            user_data.update_user_data(user_id, "current_factory", factory_info)
+            logger.info(f"User {user_id}: Set current_factory to {factory_info}")
+            
+            # Ensure the factory worksheet exists
+            try:
+                factory_manager.ensure_factory_worksheet(factory_info['tab_name'])
+                logger.info(f"User {user_id}: Using existing factory worksheet {factory_info['tab_name']}")
+            except Exception as e:
+                logger.error(f"Error ensuring factory worksheet: {e}")
+                bot.send_message(message.chat.id, f"❌ Ошибка доступа к фабрике {factory_info['name']}")
+                return
+            
+            # Generate shipment ID for this specific factory
+            try:
+                shipment_id = _new_shipment_id_for_factory(factory_info['tab_name'])
+                user_data.update_form_data(user_id, "shipment_id", shipment_id)
+                logger.info(f"User {user_id}: Generated shipment ID {shipment_id} for factory {factory_info['name']}")
+            except Exception as e:
+                logger.error(f"Error generating shipment ID: {e}")
+                bot.send_message(message.chat.id, "❌ Ошибка генерации ID поставки")
+                return
+            
+            user_data.update_user_data(user_id, "current_shipment_id", str(shipment_id))
+            # Initialize form data
+            user_data.initialize_form_data(user_id)
+            user_data.set_current_step(user_id, 1)
+            
+            # Start the warehouse selection
+            # Start the warehouse selection using existing system
+            st = {
+                STATE_STEP: STEP_WAREHOUSE,
+                STATE_MODELS: [],
+                "current_shipment_id": str(shipment_id)  # Store shipment ID in state
+            }
+            user_data.update_user_data(user_id, STATE_KEY, st)
+
+            def start_warehouse_selection_for_factory(bot, message, user_id, factory_info):
+                """Start warehouse selection with factory-specific warehouses"""
+                try:
+                    factory_tab_name = factory_info['tab_name']
+                    
+                    # Get warehouses for this factory
+                    warehouses = factory_manager.get_factory_warehouses(factory_tab_name)
+                    
+                    if not warehouses:
+                        bot.send_message(
+                            message.chat.id,
+                            f"❌ Нет доступных складов для фабрики {factory_info['name']}. Обратитесь к администратору."
+                        )
+                        return False
+                    
+                    # Create keyboard with factory-specific warehouses
+                    keyboard = _kb_warehouses_for_factory(factory_tab_name)
+                    
+                    bot.send_message(
+                        message.chat.id,
+                        f"🏭 Выберите склад для фабрики {factory_info['name']}:",
+                        reply_markup=keyboard
+                    )
+                    
+                    logger.info(f"Showed {len(warehouses)} warehouses for factory {factory_info['name']} to user {user_id}")
+                    return True
+                    
+                except Exception as e:
+                    logger.error(f"Error starting warehouse selection for factory {factory_info['name']}: {e}")
+                    bot.send_message(
+                        message.chat.id,
+                        "❌ Ошибка загрузки складов. Попробуйте позже."
+                    )
+                    return False
+            
+            if not start_warehouse_selection_for_factory(bot, message, user_id, factory_info):
+                return  # Error occurred, stop the flow
+
+            logger.info(f"User {user_id}: Save flow started successfully")
+            
+        except Exception as e:
+            logger.error(f"Error starting save flow for user {user_id}: {e}")
+            
+            bot.send_message(message.chat.id, "❌ Ошибка запуска процесса сохранения")
+            
+    # Factory selection callback handler for save
+    @bot.callback_query_handler(func=lambda c: c.data.startswith("select_factory:"))
+    def on_factory_selection_save(call):
+        """Handle factory selection callbacks - FIXED USER CONTEXT"""
+        try:
+            # CRITICAL FIX: Always use call.from_user.id for callbacks
+            user_id = call.from_user.id
+            logger.info(f"Factory selection callback: user_id={user_id}, data={call.data}")
+            
+            user_session = user_data.get_user_data(user_id)
+            
+            if not user_session:
+                bot.answer_callback_query(call.id, "Сессия не найдена")
+                logger.error(f"No session found for user {user_id}")
+                return
+            
+            pending_action = user_session.get("current_action")
+            logger.info(f"Pending action for user {user_id}: {pending_action}")
+            
+            # Handle the factory selection with the CORRECT user_id
+            factory_info = handle_factory_selection(bot, call, pending_action or "unknown")
+            
+            if factory_info:
+                logger.info(f"Factory selected successfully: {factory_info}")
+                
+                if pending_action == "save":
+                    # Update the message to show factory selection
+                    try:
+                        bot.edit_message_text(
+                            f"✅ Выбрана фабрика: {factory_info['name']}\n\nНачинаем процесс сохранения...",
+                            call.message.chat.id,
+                            call.message.message_id
+                        )
+                    except Exception:
+                        bot.send_message(call.message.chat.id, 
+                                    f"✅ Выбрана фабрика: {factory_info['name']}\n\nНачинаем процесс сохранения...")
+                    
+                    # CRITICAL: Pass the correct user_id context
+                    start_save_flow_with_factory(bot, call.message, user_id)
+                
+        except Exception as e:
+            logger.error(f"Error in factory selection callback: {e}")
+            bot.answer_callback_query(call.id, "Произошла ошибка")
+
+
 
     @bot.message_handler(func=lambda m: user_data.get_user_data(m.from_user.id) and user_data.get_user_data(m.from_user.id).get(STATE_KEY) is not None)
     def handle_text(message):
@@ -586,6 +811,7 @@ def setup_save_handler(bot: TeleBot):
             # Cancel
             if text.lower() in {"/cancel", "отмена"}:
                 user_data.update_user_data(uid, STATE_KEY, None)
+                user_data.update_user_data(uid, "pending_action", None)
                 bot.reply_to(message, "✖️ Процесс отменён.")
                 return
 
@@ -641,8 +867,13 @@ def setup_save_handler(bot: TeleBot):
                 
                 # Initialize first bag for this color with error handling
                 try:
-                    shipment_id = user_data.get_user_data(uid).get("current_shipment_id", "1")
-                    bag_id = _generate_bag_id(shipment_id, 1)
+                    current_factory = user_data.get_user_data(uid).get("current_factory")
+                    shipment_id = user_data.get_user_data(uid).get("current_shipment_id")
+                    if not shipment_id:
+                        # Fallback: get from form data
+                        form_data = user_data.get_form_data(uid)
+                        shipment_id = form_data.get('shipment_id') if form_data else "1"
+                    bag_id = _generate_bag_id_factory(current_factory['tab_name'], shipment_id, 1)
                     first_bag = {'bag_id': bag_id, 'sizes': {}}
                     
                     st[CURRENT_BAGS] = [first_bag]
@@ -667,7 +898,7 @@ def setup_save_handler(bot: TeleBot):
             # Date handling
             if step == STEP_SHIPDATE:
                 if not validate_date(text):
-                    bot.reply_to(message, "⌫ Некорректный формат даты. Используйте дд.мм.гггг или дд/мм/гггг")
+                    bot.reply_to(message, "❌ Некорректный формат даты. Используйте дд.мм.гггг или дд/мм/гггг")
                     return
                 st[STATE_SHIP_DATE] = standardize_date(text)
                 st[STATE_STEP] = STEP_ETADATE
@@ -677,12 +908,17 @@ def setup_save_handler(bot: TeleBot):
 
             if step == STEP_ETADATE:
                 if not validate_date(text):
-                    bot.reply_to(message, "⌫ Некорректный формат даты. Используйте дд.мм.гггг или дд/мм/гггг")
+                    bot.reply_to(message, "❌ Некорректный формат даты. Используйте дд.мм.гггг или дд/мм/гггг")
                     return
                 st[STATE_ETA_DATE] = standardize_date(text)
                 st[STATE_STEP] = STEP_CONFIRM
                 user_data.update_user_data(uid, STATE_KEY, st)
-                bot.send_message(message.chat.id, _format_confirmation(st), reply_markup=_kb_finish_models())
+                
+                # Get factory info for confirmation
+                factory_info = user_data.get_user_data(uid).get("current_factory")
+                factory_name = factory_info['name'] if factory_info else "Неизвестная фабрика"
+                
+                bot.send_message(message.chat.id, _format_confirmation(st, factory_name), reply_markup=_kb_finish_models())
                 return
 
             if step == STEP_CONFIRM:
@@ -742,9 +978,10 @@ def setup_save_handler(bot: TeleBot):
                 
                 # Create new bag with error handling
                 try:
+                    current_factory = user_data.get_user_data(uid).get("current_factory")
                     shipment_id = user_data.get_user_data(uid).get("current_shipment_id", "1")
                     new_bag_number = len(current_bags) + 1
-                    new_bag_id = _generate_bag_id(shipment_id, new_bag_number)
+                    new_bag_id = _generate_bag_id_factory(current_factory['tab_name'], shipment_id, new_bag_number)
                     new_bag = {'bag_id': new_bag_id, 'sizes': {}}
                     
                     current_bags.append(new_bag)
@@ -882,12 +1119,17 @@ def setup_save_handler(bot: TeleBot):
                 else:
                     st[STATE_STEP] = STEP_CONFIRM
                     user_data.update_user_data(uid, STATE_KEY, st)
+                    
+                    # Get factory info for confirmation
+                    factory_info = user_data.get_user_data(uid).get("current_factory")
+                    factory_name = factory_info['name'] if factory_info else "Неизвестная фабрика"
+                    
                     try:
-                        bot.edit_message_text(_format_confirmation(st), call.message.chat.id, call.message.message_id,
+                        bot.edit_message_text(_format_confirmation(st, factory_name), call.message.chat.id, call.message.message_id,
                                               reply_markup=_kb_finish_models())
                     except Exception as e:
                         logger.warning(f"Failed to edit message for user {uid}: {e}")
-                        bot.send_message(call.message.chat.id, _format_confirmation(st), reply_markup=_kb_finish_models())
+                        bot.send_message(call.message.chat.id, _format_confirmation(st, factory_name), reply_markup=_kb_finish_models())
                 return
                 
         except Exception as e:
@@ -914,6 +1156,7 @@ def setup_save_handler(bot: TeleBot):
 
             if data == "ship_cancel":
                 user_data.update_user_data(uid, STATE_KEY, None)
+                user_data.update_user_data(uid, "pending_action", None)
                 try:
                     bot.edit_message_text("✖️ Процесс отменён.", call.message.chat.id, call.message.message_id)
                 except Exception:
@@ -933,20 +1176,13 @@ def setup_save_handler(bot: TeleBot):
                 return
 
             if data == "ship_finish_all":
-                # Validate shipment integrity before saving
-                try:
-                    shipment_id = user_data.get_user_data(uid).get("current_shipment_id", "1")
-                    integrity_check = _validate_shipment_integrity(shipment_id)
-                    logger.info(f"Shipment {shipment_id} integrity check: {integrity_check}")
-                except Exception as e:
-                    logger.error(f"Error validating shipment integrity: {e}")
-
                 # Save every (model × color × bag) row
                 try:
                     saved = 0
                     errors = 0
                     src_username = call.from_user.username or call.from_user.first_name or str(call.from_user.id)
                     shipment_id = user_data.get_user_data(uid).get("current_shipment_id", "1")
+                    factory_info = user_data.get_user_data(uid).get("current_factory")
                     warehouse_name = st.get(STATE_WAREHOUSE)
                     ship_date = st.get(STATE_SHIP_DATE)
                     eta_date = st.get(STATE_ETA_DATE)
@@ -982,17 +1218,18 @@ def setup_save_handler(bot: TeleBot):
                                     for sz, qty in sizes.items():
                                         user_data.update_form_data(uid, sz, int(qty))
                                     
-                                    # Save to sheets
-                                    row_index = save_to_sheets(bot, call.message)
+                                    # Save to factory sheets
+                                    row_index = save_to_sheets_factory(bot, call.message)
                                     
                                     # Notify admins
                                     try:
-                                        _notify_admins_about_new_record(bot, row_index, src_username)
+                                        _notify_admins_about_new_record_factory(bot, row_index, src_username, 
+                                                                               factory_info['name'], factory_info['tab_name'])
                                     except Exception as notify_error:
                                         logger.warning(f"Failed to notify admins about new record: {notify_error}")
                                     
                                     saved += 1
-                                    logger.info(f"Successfully saved record for bag {bag_id}")
+                                    logger.info(f"Successfully saved record for bag {bag_id} to factory {factory_info['name']}")
                                     
                                 except Exception as save_error:
                                     errors += 1
@@ -1001,11 +1238,11 @@ def setup_save_handler(bot: TeleBot):
 
                     # Final status message
                     if errors == 0:
-                        success_message = f"✅ Данные сохранены успешно. Создано записей: {saved}"
-                        logger.info(f"Shipment {shipment_id} saved successfully: {saved} records")
+                        success_message = f"✅ Данные сохранены успешно в фабрику {factory_info['name']}. Создано записей: {saved}"
+                        logger.info(f"Shipment {shipment_id} saved successfully to factory {factory_info['name']}: {saved} records")
                     else:
                         success_message = f"⚠️ Сохранено записей: {saved}. Ошибок: {errors}. Обратитесь к администратору."
-                        logger.warning(f"Shipment {shipment_id} saved with errors: {saved} successful, {errors} failed")
+                        logger.warning(f"Shipment {shipment_id} saved with errors to factory {factory_info['name']}: {saved} successful, {errors} failed")
 
                     try:
                         bot.edit_message_text(success_message, call.message.chat.id, call.message.message_id)
@@ -1014,7 +1251,7 @@ def setup_save_handler(bot: TeleBot):
                         
                 except Exception as e:
                     logger.error(f"Critical error saving shipment for user {uid}: {e}")
-                    error_message = f"⌫ Ошибка при сохранении данных: {e}"
+                    error_message = f"❌ Ошибка при сохранении данных: {e}"
                     try:
                         bot.edit_message_text(error_message, call.message.chat.id, call.message.message_id)
                     except Exception:
@@ -1022,6 +1259,7 @@ def setup_save_handler(bot: TeleBot):
                 finally:
                     # Always clean up user state
                     user_data.update_user_data(uid, STATE_KEY, None)
+                    user_data.update_user_data(uid, "pending_action", None)
                 return
                 
         except Exception as e:
@@ -1035,6 +1273,7 @@ def setup_save_handler(bot: TeleBot):
         try:
             if user_data.get_user_data(uid) and user_data.get_user_data(uid).get(STATE_KEY):
                 user_data.update_user_data(uid, STATE_KEY, None)
+                user_data.update_user_data(uid, "pending_action", None)
                 bot.reply_to(message, "✖️ Процесс отменён.")
             else:
                 bot.reply_to(message, "Нет активного процесса для отмены.")
@@ -1073,3 +1312,60 @@ def setup_save_handler(bot: TeleBot):
         except Exception as e:
             logger.error(f"Error in on_choose_warehouse for user {uid}: {e}")
             bot.answer_callback_query(call.id, "❌ Произошла ошибка при выборе склада.")
+            
+    @bot.callback_query_handler(func=lambda c: c.data.startswith("warehouse_"))
+    def on_warehouse_selection(call):
+        """Handle warehouse selection - FIXED USER CONTEXT"""
+        try:
+            # CRITICAL FIX: Always use callback user_id
+            user_id = call.from_user.id
+            logger.info(f"Warehouse selection callback: user_id={user_id}, data={call.data}")
+            
+            # Validate user session exists
+            user_session = user_data.get_user_data(user_id)
+            if not user_session:
+                bot.answer_callback_query(call.id, "Сессия истекла. Начните заново с /save")
+                logger.error(f"No session found for user {user_id}")
+                return
+            
+            # Check if user has current_factory set
+            if "current_factory" not in user_session:
+                bot.answer_callback_query(call.id, "Сессия истекла. Фабрика не выбрана.")
+                logger.error(f"User {user_id}: No current_factory in session")
+                return
+            
+            warehouse_map = {
+                "warehouse_factory": "Фабричный склад",
+                "warehouse_shipping": "Склад отправки", 
+                "warehouse_central": "Центральный склад",
+                "warehouse_retail": "Розничный склад"
+            }
+            
+            warehouse_name = warehouse_map.get(call.data)
+            if not warehouse_name:
+                bot.answer_callback_query(call.id, "Неизвестный склад")
+                return
+            
+            # Store warehouse selection for the correct user
+            user_data.update_form_data(user_id, "warehouse", warehouse_name)
+            
+            bot.answer_callback_query(call.id, f"Выбран склад: {warehouse_name}")
+            logger.info(f"User {user_id}: Selected warehouse: {warehouse_name}")
+            
+            # Update message
+            try:
+                bot.edit_message_text(
+                    f"✅ Склад: {warehouse_name}\n\nТеперь введите название товара:",
+                    call.message.chat.id,
+                    call.message.message_id
+                )
+            except Exception:
+                bot.send_message(call.message.chat.id, f"✅ Склад: {warehouse_name}\n\nТеперь введите название товара:")
+            
+            # Move to next step
+            user_data.set_current_step(user_id, 2)
+            
+        except Exception as e:
+            logger.error(f"Error in warehouse selection for user {user_id}: {e}")
+            bot.answer_callback_query(call.id, "Произошла ошибка")
+            
