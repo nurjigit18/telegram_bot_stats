@@ -618,7 +618,7 @@ def setup_save_handler(bot: TeleBot):
             return
         
         logger.info(f"User {uid}: Starting save flow with factory {factory_info['name']}")
-        start_save_flow_with_factory(bot, message, factory_info)
+        start_save_flow_with_factory(bot, message, uid)
         
     def generate_shipment_id(factory_tab_name):
         """Generate unique shipment ID for factory - Column D (index 3)"""
