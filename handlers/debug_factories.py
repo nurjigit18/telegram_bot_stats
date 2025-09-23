@@ -52,7 +52,7 @@ def setup_debug_factory_handlers(bot: TeleBot):
             debug_info.append("📋 Google Sheets Data:")
             try:
                 sheets_manager = GoogleSheetsManager.get_instance()
-                factories_ws = sheets_manager._spreadsheet.worksheet("Factories")
+                factories_ws = sheets_manager._spreadsheet.worksheet("цехи")
                 all_data = factories_ws.get_all_values()
                 
                 debug_info.append(f"Total rows in Factories sheet: {len(all_data)}")

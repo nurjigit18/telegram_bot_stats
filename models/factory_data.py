@@ -25,7 +25,7 @@ class FactoryManager:
             # Try to get from Google Sheets first
             sheets_manager = GoogleSheetsManager.get_instance()
             try:
-                factories_ws = sheets_manager._spreadsheet.worksheet("Factories")
+                factories_ws = sheets_manager._spreadsheet.worksheet("цехи")
                 factories_data = factories_ws.get_all_values()
                 
                 if len(factories_data) > 1:  # Has data beyond headers
@@ -50,7 +50,7 @@ class FactoryManager:
             except Exception as e:
                 logger.info(f"Factories worksheet not found or empty, creating default: {e}")
                 # Create default factories worksheet
-                factories_ws = sheets_manager._spreadsheet.add_worksheet("Factories", 100, 3)
+                factories_ws = sheets_manager._spreadsheet.add_worksheet("цехи", 100, 3)
                 factories_ws.update('A1', [['user_id', 'factory_name', 'tab_name']])
                 
         except Exception as e:
@@ -99,7 +99,7 @@ class FactoryManager:
         """Add a new factory for a user (admin function)"""
         try:
             sheets_manager = GoogleSheetsManager.get_instance()
-            factories_ws = sheets_manager._spreadsheet.worksheet("Factories")
+            factories_ws = sheets_manager._spreadsheet.worksheet("цехи")
             
             # Add to Google Sheets
             factories_ws.append_row([user_id, factory_name, tab_name])
@@ -197,7 +197,7 @@ class FactoryManager:
             
             try:
                 # Get the Factory_Warehouses worksheet
-                warehouses_ws = sheets_manager._spreadsheet.worksheet("Factory_Warehouses")
+                warehouses_ws = sheets_manager._spreadsheet.worksheet("склады")
                 warehouses_data = warehouses_ws.get_all_values()
                 
                 if len(warehouses_data) <= 1:  # Only headers or empty
@@ -245,7 +245,7 @@ class FactoryManager:
             sheets_manager = GoogleSheetsManager.get_instance()
             
             # Create worksheet
-            warehouses_ws = sheets_manager._spreadsheet.add_worksheet("Factory_Warehouses", 100, 2)
+            warehouses_ws = sheets_manager._spreadsheet.add_worksheet("склады", 100, 2)
             
             # Add headers and sample data
             sample_data = [

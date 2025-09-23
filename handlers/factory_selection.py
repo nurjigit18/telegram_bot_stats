@@ -199,7 +199,7 @@ class FactoryManager:
             # Try to get from Google Sheets first
             sheets_manager = GoogleSheetsManager.get_instance()
             try:
-                factories_ws = sheets_manager._spreadsheet.worksheet("Factories")
+                factories_ws = sheets_manager._spreadsheet.worksheet("цехи")
                 factories_data = factories_ws.get_all_values()
                 
                 logger.info(f"Factories worksheet data: {factories_data}")
@@ -239,7 +239,7 @@ class FactoryManager:
                 logger.info(f"Factories worksheet not found or error accessing it: {e}")
                 # Create default factories worksheet
                 try:
-                    factories_ws = sheets_manager._spreadsheet.add_worksheet("Factories", 100, 3)
+                    factories_ws = sheets_manager._spreadsheet.add_worksheet("цехи", 100, 3)
                     factories_ws.update('A1', [['user_id', 'factory_name', 'tab_name']])
                     logger.info("Created new Factories worksheet")
                 except Exception as create_error:
@@ -305,7 +305,7 @@ class FactoryManager:
         """Add a new factory for a user (admin function)"""
         try:
             sheets_manager = GoogleSheetsManager.get_instance()
-            factories_ws = sheets_manager._spreadsheet.worksheet("Factories")
+            factories_ws = sheets_manager._spreadsheet.worksheet("цехи")
             
             # Add to Google Sheets
             factories_ws.append_row([user_id, factory_name, tab_name])
