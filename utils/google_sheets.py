@@ -121,9 +121,9 @@ class GoogleSheetsManager:
 
             # Users worksheet
             try:
-                self.users_worksheet = self._spreadsheet.worksheet("Users")
+                self.users_worksheet = self._spreadsheet.worksheet("пользователи")
             except gspread.WorksheetNotFound:
-                self.users_worksheet = self._spreadsheet.add_worksheet("Users", 1000, 3)
+                self.users_worksheet = self._spreadsheet.add_worksheet("пользователи", 1000, 3)
                 self.users_worksheet.update('A1', [['chat_id', 'username', 'registration_date']])
 
             logger.info(f"Google Sheets connected. Service account: {creds_dict.get('client_email', '?')}")

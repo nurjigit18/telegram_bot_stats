@@ -1,27 +1,29 @@
 from dataclasses import dataclass, field
 from typing import Dict, List, Any
 
-SESSIONS: Dict[int, "SessionState"] = {}
 
 class UserData:
     def __init__(self):
         self.data = {}
-
-    def initialize_user(self, user_id):
-        self.data[user_id] = {
-            "current_step": 0,
-            "current_action": None,
-            "data": {}
-        }
-
-    # keep SIZE_COLS here if you don't want an extra constants module
     SIZE_COLS = ["XS", "S", "M", "L", "XL", "2XL", "3XL", "4XL", "5XL", "6XL", "7XL", "8XL"]
 
+    def initialize_user(self, user_id):
+        """Create a user record only if it doesn't exist (do not overwrite!)."""
+        if user_id not in self.data:
+            self.data[user_id] = {
+                "current_step": 0,
+                "current_action": None,
+                "data": {}
+            }
+
     def initialize_form_data(self, user_id):
-        if user_id in self.data:
+        """Prepare form payload but only replace if empty/missing."""
+        self.initialize_user(user_id)
+        cur = self.data[user_id].get("data")
+        if not isinstance(cur, dict) or not cur:
             payload = {
-                "shipment_id": None,  # NEW: shipment ID
-                "bag_id": None,       # NEW: bag ID
+                "shipment_id": None,
+                "bag_id": None,
                 "warehouse": None,
                 "product_name": None,
                 "color": None,
@@ -31,10 +33,17 @@ class UserData:
                 "total_amount": 0,
                 "status": "в обработке",
             }
-            # IMPORTANT: use self.SIZE_COLS (not bare SIZE_COLS)
             for k in self.SIZE_COLS:
                 payload[k] = 0
             self.data[user_id]["data"] = payload
+
+    # ... keep the rest as-is ...
+
+    def get_state(self, user_id):
+        """Return the whole per-user dict; always initialized."""
+        self.initialize_user(user_id)
+        return self.data[user_id]
+
 
     def update_form_data(self, user_id, field, value):
         """Update a specific field in the user's form data."""
@@ -121,12 +130,6 @@ class SessionState:
 
     # (optional) any other fields you had
     extra: Dict[str, Any] = field(default_factory=dict)
-
-
-def get_session(user_id: int) -> SessionState:
-    if user_id not in SESSIONS:
-        SESSIONS[user_id] = SessionState()
-    return SESSIONS[user_id]
 
 
 def reset_shipment_state(s: SessionState) -> None:
