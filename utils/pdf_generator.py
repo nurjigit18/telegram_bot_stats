@@ -23,8 +23,8 @@ from reportlab.pdfbase.ttfonts import TTFont
 logger = logging.getLogger(__name__)
 
 # Register fonts (paths must exist)
-pdfmetrics.registerFont(TTFont('DejaVuSans',       r"E:\new_bot_telegram\telegram_bot_stats\fonts\DejaVuSans.ttf"))
-pdfmetrics.registerFont(TTFont('DejaVuSans-Bold', r"E:\new_bot_telegram\telegram_bot_stats\fonts\DejaVuSans-Bold.ttf"))
+pdfmetrics.registerFont(TTFont('DejaVuSans',       'fonts/DejaVuSans.ttf'))
+pdfmetrics.registerFont(TTFont('DejaVuSans-Bold', 'fonts/DejaVuSansBold.ttf'))
 
 
 class ShipmentPDFGenerator:
