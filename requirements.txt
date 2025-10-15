@@ -8,6 +8,7 @@ python-dotenv
 oauth2client
 psutil
 pytz
-reportlab==4.0.7
-qrcode[pil]==7.4.2
-Pillow==10.1.0
+reportlab
+qrcode
+pillow
+segno

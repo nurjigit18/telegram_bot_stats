@@ -1,3 +1,9 @@
+import pytz
+import logging
+import secrets
+import time
+import threading
+import traceback
 from telebot import TeleBot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from models.user_data import user_data
@@ -7,12 +13,8 @@ from utils.google_sheets import GoogleSheetsManager, SIZE_COLS
 from utils.validators import validate_date, standardize_date
 from utils.factory_helpers import _new_shipment_id_for_factory, _generate_bag_id_factory
 from utils.formatting_helpers import _format_bag_preview, _format_confirmation
+import utils.pdf_generator
 from datetime import datetime
-import pytz
-import logging
-import secrets
-import time
-import threading
 from typing import Optional, Tuple, Dict, List
 
 logger = logging.getLogger(__name__)
@@ -916,6 +918,10 @@ def setup_save_handler(bot: TeleBot):
                                     user_data.update_form_data(uid, 'status', 'в обработке')
                                     
                                     # Set size quantities
+                                    for sz in SIZE_COLS:
+                                        user_data.update_form_data(uid, sz, 0)
+
+                                    # Then set the actual values for this bag
                                     for sz, qty in sizes.items():
                                         user_data.update_form_data(uid, sz, int(qty))
                                     
@@ -937,12 +943,48 @@ def setup_save_handler(bot: TeleBot):
                                     logger.error(f"Error saving bag {bag.get('bag_id', 'unknown')}: {save_error}")
                                     continue
 
+                    # ============ NEW: Generate and send PDF report ============
+                    pdf_sent = False
+                    try:
+                        from utils.pdf_generator import create_shipment_pdf
+                        
+                        logger.info(f"Generating PDF for shipment {shipment_id} in factory {factory_info['name']}")
+                        
+                        # Create PDF with factory name
+                        pdf_buffer = create_shipment_pdf(
+                            st, 
+                            shipment_id, 
+                            factory_name=factory_info['name']
+                        )
+                        
+                        # Send PDF to user
+                        pdf_buffer.seek(0)
+                        pdf_filename = f"shipment_{shipment_id}_{factory_info['tab_name']}_{datetime.now(pytz.timezone('Asia/Bishkek')).strftime('%Y%m%d_%H%M%S')}.pdf"
+                        
+                        bot.send_document(
+                            call.message.chat.id,
+                            document=pdf_buffer,
+                            visible_file_name=pdf_filename,
+                            caption=f"📄 Отчет об отправке #{shipment_id}\n🏭 Фабрика: {factory_info['name']}"
+                        )
+                        pdf_sent = True
+                        logger.info(f"PDF sent successfully for shipment {shipment_id} in factory {factory_info['name']}")
+                        
+                    except Exception as pdf_error:
+                        logger.error(f"Error generating/sending PDF: {pdf_error}")
+                        logger.error(traceback.format_exc())
+                        # Don't fail the entire operation if PDF generation fails
+
                     # Final status message
                     if errors == 0:
                         success_message = f"✅ Данные сохранены успешно в фабрику {factory_info['name']}. Создано записей: {saved}"
+                        if pdf_sent:
+                            success_message += "\n📄 PDF отчет отправлен"
                         logger.info(f"Shipment {shipment_id} saved successfully to factory {factory_info['name']}: {saved} records")
                     else:
                         success_message = f"⚠️ Сохранено записей: {saved}. Ошибок: {errors}. Обратитесь к администратору."
+                        if pdf_sent:
+                            success_message += "\n📄 PDF отчет отправлен"
                         logger.warning(f"Shipment {shipment_id} saved with errors to factory {factory_info['name']}: {saved} successful, {errors} failed")
 
                     try:
@@ -952,6 +994,7 @@ def setup_save_handler(bot: TeleBot):
                         
                 except Exception as e:
                     logger.error(f"Critical error saving shipment for user {uid}: {e}")
+                    logger.error(traceback.format_exc())
                     error_message = f"❌ Ошибка при сохранении данных: {e}"
                     try:
                         bot.edit_message_text(error_message, call.message.chat.id, call.message.message_id)
