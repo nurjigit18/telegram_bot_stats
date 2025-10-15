@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Register fonts (paths must exist)
 pdfmetrics.registerFont(TTFont('DejaVuSans',       'fonts/DejaVuSans.ttf'))
-pdfmetrics.registerFont(TTFont('DejaVuSans-Bold', 'fonts/DejaVuSansBold.ttf'))
+pdfmetrics.registerFont(TTFont('DejaVuSans-Bold', 'fonts/DejaVuSans-Bold.ttf'))
 
 
 class ShipmentPDFGenerator:
